@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-18
+
+- **Docker 形态对外端口可配置**：`install.sh` 生成的 compose 端口映射改为从 `.env` 的
+  `PANGU_UI_PORT` 读取（默认 8787）——走 Cloudflare 等 CDN 代理（只转发
+  80/443/2052/2083/2086/2087/8080/8880/8443）时改一个变量即可换对外端口，无需手改
+  compose 文件；安装健康检查同步打映射端口；部署手册新增 Cloudflare 端口限制节。
+
 ## [0.1.1] - 2026-11-18
 
 - **支持域名与 IP 两种部署形态（install.sh `--domain` 参数）**：提供域名时自动预置
@@ -3658,7 +3665,8 @@ done 18 / exhausted 99 / blocked 82——**exhausted 是 done 的 5.5 倍**，�
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/just805/Pangu/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/just805/Pangu/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/just805/Pangu/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/just805/Pangu/compare/v0.1.0...v0.1.1
 [v0.1.0]: https://github.com/just805/Pangu/releases/tag/v0.1.0
 [0.3.10]: https://github.com/just805/Pangu/compare/v0.3.9...v0.3.10
