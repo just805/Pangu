@@ -1,0 +1,232 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # 创建 Release 需要
+  packages: write # 推送镜像到 GHCR 需要
+
+jobs:
+  # ① 前端静态导出（一次），产物给交叉编译各平台复用
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build:static
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/out
+
+  # ② Linux 交叉编译（amd64/arm64，内嵌前端）+ 打 zip。
+  #    暂不适配 Windows/macOS：产品定位是 Linux 服务器常驻部署。
+  binaries:
+    needs: frontend
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: server/webui/dist
+      - name: Build and package with build.sh
+        env:
+          PANGU_TARGET_OS: ${{ matrix.goos }}
+          PANGU_TARGET_ARCH: ${{ matrix.goarch }}
+          PANGU_BUILD_VERSION: ${{ github.ref_name }}
+          PANGU_SKIP_FRONTEND: "1"
+          PANGU_SKIP_NPM_CI: "1"
+          # UPX 自解压 ELF 在部分 Linux 内核、虚拟化和安全策略下会崩溃。
+          # Release 使用 Go linker 裁剪和 zip 压缩，优先保证可移植性。
+          PANGU_COMPRESS: "0"
+          PANGU_PACKAGE: "1"
+          PANGU_PACKAGE_DIR: dist
+        run: |
+          ./build.sh --target "${PANGU_TARGET_OS}/${PANGU_TARGET_ARCH}"
+      - name: Smoke test Linux amd64 binary
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: dist/pangu-linux-amd64/pangu -h
+      # darwin 产物在 ubuntu runner 上无法执行，验证 Mach-O 格式与内嵌前端存在
+      - name: Verify darwin binary format
+        if: startsWith(matrix.goos, 'darwin')
+        run: |
+          file "dist/pangu-${{ matrix.goos }}-${{ matrix.goarch }}/pangu"
+          file "dist/pangu-${{ matrix.goos }}-${{ matrix.goarch }}/pangu" | grep -q "Mach-O"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: "dist/*.zip"
+      # Linux 生二进制单独上传，供 docker job 复用（免在镜像里重编前端+Go）
+      - if: matrix.goos == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-linux-${{ matrix.goarch }}
+          path: |
+            dist/pangu-linux-${{ matrix.goarch }}/pangu
+            dist/pangu-linux-${{ matrix.goarch }}/pangu-hostd
+
+  # ③ 汇总所有 zip → 创建 GitHub Release
+  release:
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      # 这个 job 只拿到 dist/ 产物，没有工作区；install.sh 要从仓库取，所以必须 checkout。
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          merge-multiple: true
+          path: dist
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum *.zip > SHA256SUMS
+      # install.sh 也作为 Release 资产发布：README 推荐的
+      # `curl -fsSL .../releases/latest/download/install.sh | sudo bash` 就取这里。
+      - name: Stage install.sh
+        run: cp install.sh dist/install.sh
+      # Release 说明 = 安装指引 + CHANGELOG 对应版本详录（不用 generate_release_notes——
+      # 自动生成的 "Full Changelog: vx...vy" 链接对使用者没有信息量，详情应直接写在页面上）。
+      - name: Build release notes (install guide + CHANGELOG section)
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          {
+            echo "## 下载与安装"
+            echo ""
+            echo "**Linux / macOS**（amd64 + arm64，一条命令全自动安装）："
+            echo ""
+            echo '```bash'
+            echo 'curl -fsSL https://github.com/just805/Pangu/releases/latest/download/install.sh | sudo bash'
+            echo '```'
+            echo ""
+            echo "**Windows**：使用 Docker Desktop（WSL2 后端），见 README「快速开始」。"
+            echo "**升级**：已有部署走页面「一键更新」，或用本页对应平台的 zip + SHA256SUMS 原地换装。"
+            echo "**镜像**：\`ghcr.io/just805/pangu:$GITHUB_REF_NAME\`（amd64/arm64；Docker 形态工具链随镜像内置）。"
+            echo ""
+            echo "详细安装/配置/预设说明见 README 与 docs/部署手册.md。"
+            echo ""
+            echo "## 本版本更新内容"
+            echo ""
+          # 提取 CHANGELOG.md 中本版本的完整段落（## [VER] 到下一个 ## 之间）。
+          # 必须用 index() 做字面量前缀匹配：awk 的 ~ 会把 "[0.4.74]" 当成字符类，
+          # 导致匹配不到带方括号的版本标题，反而命中附录里的 "## 0.4.4 – 0.4.19"
+          # ——这正是 v0.4.73~0.4.75 Release 页贴出整段旧表格的根因。
+          FOUND=$(awk -v ver="## [$VER]" '
+            index($0, ver) == 1 { flag = 1; next }
+            flag && /^## / { exit }
+            flag { print }
+          ' CHANGELOG.md)
+          if [ -z "$FOUND" ]; then
+            echo "::error::CHANGELOG.md 缺少 ## [$VER] 段，拒绝发布空说明的 Release"
+            exit 1
+          fi
+          printf '%s\n' "$FOUND"
+            echo ""
+            echo "---"
+            echo ""
+            echo "完整逐版本历史见 [CHANGELOG.md](https://github.com/just805/Pangu/blob/main/CHANGELOG.md)。"
+          } > /tmp/release-notes.md
+          head -30 /tmp/release-notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS
+            dist/install.sh
+          body_path: /tmp/release-notes.md
+
+  # ④ 多架构镜像（复用 binaries 编好的 Linux 二进制，镜像里只装工具 + 放二进制；
+  #    arm64 仅需模拟 apt 层，构建快很多）。
+  #    始终发布到 GHCR（ghcr.io/just805/pangu）——用 Actions 内置 GITHUB_TOKEN，
+  #    无需配置任何 secrets；若另外配置了 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN
+  #    secrets，则同时推送到 <DockerHub用户名>/pangu，方便习惯 Docker Hub 的用户。
+  docker-cred-check:
+    runs-on: ubuntu-latest
+    outputs:
+      ok: ${{ steps.check.outputs.ok }}
+    steps:
+      - id: check
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::未配置 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets，跳过 Docker Hub 镜像发布（GHCR 发布不受影响）"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  docker:
+    needs: [binaries, docker-cred-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5 # 取 Dockerfile 与 skills/
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-linux-amd64
+          path: dist/amd64
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-linux-arm64
+          path: dist/arm64
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      # GHCR 登录：公开仓库内置 GITHUB_TOKEN 即可，无需任何配置
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Docker Hub 登录：仅在配置了 secrets 时执行
+      - uses: docker/login-action@v3
+        if: needs.docker-cred-check.outputs.ok == 'true'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: 组装镜像名列表
+        id: images
+        env:
+          DOCKERHUB_OK: ${{ needs.docker-cred-check.outputs.ok }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          imgs="ghcr.io/just805/pangu"
+          if [ "$DOCKERHUB_OK" = "true" ] && [ -n "$DOCKERHUB_USERNAME" ]; then
+            imgs="$imgs,${DOCKERHUB_USERNAME}/pangu"
+          fi
+          echo "images=$imgs" >> "$GITHUB_OUTPUT"
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ steps.images.outputs.images }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
