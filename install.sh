@@ -26,6 +26,7 @@ VERSION="latest"
 MODE="${MODE:-}"
 WITH_TOOLS=0
 LISTEN_ADDR="${LISTEN_ADDR:-:8787}"
+DOMAIN="${DOMAIN:-}"
 PROXY_ADDR="${PROXY_ADDR:-127.0.0.1:8788}"
 PG_SUPER="${PG_SUPER:-postgres}"
 # 安装期出网代理（apt / curl / go 下载走它）。留空 = 直连。
@@ -67,6 +68,7 @@ PANGU 安装脚本
   --dir=PATH             安装目录（默认 /opt/pangu）
   --listen=ADDR          监听地址（默认 :8787）
   --proxy=ADDR           流量记录代理地址（默认 127.0.0.1:8788）
+  --domain=NAME          域名部署（如 pangu.example.com）：预置 HTTPS 相关环境变量并按域名打印访问入口；不填 = 按 IP:端口 访问
   --install-proxy=URL    安装期出网代理，如 http://10.0.0.14:7897（默认取 \$HTTPS_PROXY）
   -y, --yes              非交互，全部用默认值
   -h, --help             显示帮助
@@ -96,6 +98,7 @@ for arg in "$@"; do
     --listen=*)        LISTEN_ADDR="${arg#--listen=}" ;;
     --proxy=*)         PROXY_ADDR="${arg#--proxy=}" ;;
     --install-proxy=*) INSTALL_PROXY="${arg#--install-proxy=}" ;;
+    --domain=*)        DOMAIN="${arg#--domain=}" ;;
     --user=*)          RUN_USER="${arg#--user=}" ;;
     --pg-super=*)      PG_SUPER="${arg#--pg-super=}" ;;
     --image=*)         IMAGE="${arg#--image=}" ;;
@@ -407,6 +410,16 @@ Environment=HTTPS_PROXY=${INSTALL_PROXY}"
   esac
 fi
 
+# 域名部署的环境预置：--domain 提供时假定走「反代 TLS」形态——
+#   - PANGU_COOKIE_SECURE=1：HTTPS 下会话 cookie 才带 Secure；
+#   - PANGU_TRUSTED_PROXIES=127.0.0.1：本机反代是最常见形态（nginx/caddy 同机），
+#     反代在其它机器时改写成对应网段（安装摘要里会再提醒）。
+DOMAIN_ENV=""
+if [ -n "$DOMAIN" ]; then
+  DOMAIN_ENV="Environment=PANGU_COOKIE_SECURE=1
+Environment=PANGU_TRUSTED_PROXIES=127.0.0.1"
+fi
+
 # ── 选择部署形态 ─────────────────────────────────
 choose_mode(){
   if [ -n "$MODE" ]; then
@@ -617,6 +630,7 @@ ExecStart=${INSTALL_DIR}/start.sh -addr ${LISTEN_ADDR} -proxy ${PROXY_ADDR}
 # 装机代理：宿主环境页的「一键安装」和后台情报同步用。hostd 是独立进程，
 # 不共享主服务环境，所以它自己的单元也要带（见下方 hostd 单元）。
 ${INSTALL_PROXY_ENV}
+${DOMAIN_ENV}
 Restart=always
 RestartSec=5
 # 安全加固
@@ -962,6 +976,12 @@ ENV
       fi
       ok "已同步 .env 里的装机代理"
     fi
+  fi
+  # 域名部署：预置 HTTPS 相关变量（反代 TLS 下会话 cookie 才带 Secure）。
+  # 幂等：升级重跑不重复追加、已有值不覆盖。
+  if [ -n "$DOMAIN" ] && ! grep -q '^PANGU_COOKIE_SECURE=' "$INSTALL_DIR/.env"; then
+    printf 'PANGU_COOKIE_SECURE=1\nPANGU_TRUSTED_PROXIES=127.0.0.1\n' >> "$INSTALL_DIR/.env"
+    ok "已按域名部署预置 PANGU_COOKIE_SECURE=1 / PANGU_TRUSTED_PROXIES=127.0.0.1（反代不在本机时改网段）"
   fi
 
   local PORT="${LISTEN_ADDR##*:}" PROXY_PORT="${PROXY_ADDR##*:}"
@@ -1411,7 +1431,13 @@ for _n in $(seq 1 30); do
     # macOS 的 hostname 没有 -I（退出码 1），set -o pipefail 会把它传染整条管道、
     # set -e 当场杀掉脚本——曾让 macOS 安装在 health 200 后静默退出
     HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
-    ok "服务已就绪 → http://${HOST_IP:-127.0.0.1}:${PORT}（首次访问设置管理员密码）"
+    if [ -n "$DOMAIN" ]; then
+      # 域名部署：访问入口走反代，摘要给出反代指向与安全变量核对项。
+      ok "服务已就绪 → 域名入口 https://${DOMAIN}（反代指向 http://127.0.0.1:${PORT}，TLS 就绪后即为 HTTPS）"
+      info "域名部署核对：①会话 cookie 已预置 PANGU_COOKIE_SECURE=1；②PANGU_TRUSTED_PROXIES=127.0.0.1（反代不在本机时改成其网段，否则登录防爆破按反代 IP 计）；③建议再设 PANGU_HSTS_MAX_AGE=31536000；④首次访问 ${DOMAIN} 设置管理员密码（公网部署建议先设 PANGU_INIT_TOKEN）"
+    else
+      ok "服务已就绪 → http://${HOST_IP:-127.0.0.1}:${PORT}（首次访问设置管理员密码）"
+    fi
     info "下一步：①设置管理员密码 ②「LLM 配置」配通道 ③「系统→MCP」用预设接入 FOFA/Playwright ④建任务可套用内置 Playbook"
     if [ "$MODE" = "binary" ]; then
       if [ "$IS_MAC" = "1" ]; then
