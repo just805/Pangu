@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-18
+
+- **支持域名与 IP 两种部署形态（install.sh `--domain` 参数）**：提供域名时自动预置
+  `PANGU_COOKIE_SECURE=1` / `PANGU_TRUSTED_PROXIES=127.0.0.1`（Docker 形态写 .env，幂等），
+  安装摘要按域名打印访问入口与反代核对清单；不提供时行为不变（IP:8787 直连）。
+  部署手册新增「域名部署 vs IP 部署」节（对照表 + 反代动作清单）。
+- **修复老系统装机第一步报错**（curl 7.29 等）：install.sh 的 curl 重试参数按版本分级
+  降级——`--retry` 系列 ≥7.52 才加、`--retry-all-errors` ≥7.71 才加，老 curl 不再
+  因参数不支持而中止安装。
+
 ## [0.1.0] - 2026-11-18
 
 盘古 Pangu 首个公开版本（GitHub: just805/Pangu）。完整基线与近期批次见下方各节。
@@ -3648,7 +3658,8 @@ done 18 / exhausted 99 / blocked 82——**exhausted 是 done 的 5.5 倍**，�
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/just805/Pangu/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/just805/Pangu/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/just805/Pangu/compare/v0.1.0...v0.1.1
 [v0.1.0]: https://github.com/just805/Pangu/releases/tag/v0.1.0
 [0.3.10]: https://github.com/just805/Pangu/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/just805/Pangu/compare/v0.3.8...v0.3.9
