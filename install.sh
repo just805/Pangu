@@ -330,7 +330,24 @@ configure_proxy
 # 重试参数形同虚设。
 #
 # --retry-delay：重试之间退避，避免连着打同一个不稳的出口。
-CURL=(curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --retry-max-time 1800)
+#
+# 参数按 curl 版本分级（实测 CentOS 7 自带 curl 7.29 连 --retry 都没有，直接
+# 报 "option --retry-all-errors: is unknown" 整条命令失败——这是老系统装机
+# 第一步「获取最新版本号」就挂掉的原因）。降级不是最优但比装不上强：
+#   - < 7.52：仅 -fsSL，无重试（老 curl 单次失败即见，网络问题显式暴露）；
+#   - ≥ 7.52：+ --retry 5 --retry-delay 3 --retry-max-time 1800；
+#   - ≥ 7.71：再 + --retry-all-errors（否则 --retry 只重试瞬时错误，
+#     SSL 中断类传输错误直接失败——实测经代理下载 17MB 包时被切断后立刻放弃）。
+curl_version() { curl --version 2>/dev/null | head -1 | awk '{print $2}'; }
+version_ge() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
+_curl_ver=$(curl_version)
+CURL=(curl -fsSL)
+if version_ge "$_curl_ver" "7.52"; then
+  CURL+=(--retry 5 --retry-delay 3 --retry-max-time 1800)
+fi
+if version_ge "$_curl_ver" "7.71"; then
+  CURL+=(--retry-all-errors)
+fi
 if [ -n "$INSTALL_PROXY" ]; then
   while IFS= read -r _parg; do
     [ -n "$_parg" ] && CURL+=("$_parg")
