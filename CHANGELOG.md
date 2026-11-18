@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [v0.1.0] - 2026-11-18
+
+盘古 Pangu 首个公开版本（GitHub: just805/Pangu）。完整基线与近期批次见下方各节。
+
 ### 项目更名：破军 Pojun → 盘古 Pangu（同步仓库 github.com/just805/Pangu）
 
 - **改什么**：UI 显示名（盘古）、环境变量前缀（`POJUN_*` → `PANGU_*`，一次性切换——
@@ -3644,7 +3648,8 @@ done 18 / exhausted 99 / blocked 82——**exhausted 是 done 的 5.5 倍**，�
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/just805/Pangu/compare/v0.3.10...HEAD
+[Unreleased]: https://github.com/just805/Pangu/compare/v0.1.0...HEAD
+[v0.1.0]: https://github.com/just805/Pangu/releases/tag/v0.1.0
 [0.3.10]: https://github.com/just805/Pangu/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/just805/Pangu/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/just805/Pangu/compare/v0.3.7...v0.3.8
