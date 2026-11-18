@@ -961,6 +961,10 @@ POSTGRES_DB=pangu
 PANGU_IMAGE=$IMAGE
 PANGU_TAG=$VERSION
 PANGU_INSTALL_PROXY=$INSTALL_PROXY
+PROXY_PORT=$PROXY_PORT
+# UI 对外端口（compose 的 8787 映射宿主侧）。走 Cloudflare 代理时必须用
+# 它支持的端口（80/443/2052/2083/2086/2087/8080/8880/8443），如 PANGU_UI_PORT=2052。
+PANGU_UI_PORT=${PORT}
 ENV
     chmod 600 "$INSTALL_DIR/.env"
     ok "已生成 $INSTALL_DIR/.env（含随机数据库密码，权限 600）"
@@ -1020,8 +1024,10 @@ services:
       # config.json，只能走环境变量；服务端读它作为数据库 setting 的兜底。
       PANGU_INSTALL_PROXY: \${PANGU_INSTALL_PROXY:-}
     ports:
-      - "${PORT}:8787"
-      - "127.0.0.1:${PROXY_PORT}:8788"
+      # 对外端口从 .env 的 PANGU_UI_PORT 读（默认 8787）。走 Cloudflare 等
+      # CDN 代理时改成其支持的端口（如 2052），改完 docker compose up -d 生效。
+      - "\${PANGU_UI_PORT:-8787}:8787"
+      - "127.0.0.1:\${PROXY_PORT:-8788}:8788"
       # 回连端口映射（按需放开）：容器内 MSF/listener 监听的端口要映射到宿主，
       # agent 才能收到 reverse shell。示例：
       # - "4444-4450:4444-4450"
@@ -1420,6 +1426,12 @@ persist_install_proxy
 
 # ── 健康检查 ─────────────────────────────────────
 PORT="${LISTEN_ADDR##*:}"
+if [ "$MODE" = "docker" ] && [ -f "$INSTALL_DIR/.env" ]; then
+  # Docker 形态对外端口可经 .env 的 PANGU_UI_PORT 覆盖（Cloudflare 等 CDN
+  # 只转发特定端口，用户会改成 2052 之类）——健康检查必须打映射后的端口。
+  _ui_port="$(grep -E '^PANGU_UI_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2)"
+  [ -n "$_ui_port" ] && PORT="$_ui_port"
+fi
 for _n in $(seq 1 30); do
   # 每轮失败打进度：装机现场「卡在哪一步」必须可见，也方便排障
   # curl 的退出码显式捕获：set -e 下 if 条件本应豁免，但显式 rc 让「为什么退出」
