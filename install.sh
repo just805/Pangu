@@ -68,7 +68,7 @@ PANGU 安装脚本
   --dir=PATH             安装目录（默认 /opt/pangu）
   --listen=ADDR          监听地址（默认 :8787）
   --proxy=ADDR           流量记录代理地址（默认 127.0.0.1:8788）
-  --domain=NAME          域名部署（如 pangu.example.com）：预置 HTTPS 相关环境变量并按域名打印访问入口；不填 = 按 IP:端口 访问
+  --domain=NAME          域名部署（如 pangu.example.com）：预置 HTTPS 相关环境变量并按域名打印访问入口；不填 = 按 IP:端口 访问（交互安装时也会询问，留空 = IP 直连）
   --install-proxy=URL    安装期出网代理，如 http://10.0.0.14:7897（默认取 \$HTTPS_PROXY）
   -y, --yes              非交互，全部用默认值
   -h, --help             显示帮助
@@ -443,7 +443,26 @@ choose_mode(){
   printf '\n'
 }
 
-choose_mode
+# ── 询问访问形态（域名 vs IP）────────────────────────
+# 只在交互模式且未用 --domain 显式指定时问。留空 = 按 IP:端口 直连（默认形态，
+# 行为与不问时完全一致）。域名形态走「反代 TLS」：会预置
+# PANGU_COOKIE_SECURE=1 / PANGU_TRUSTED_PROXIES=127.0.0.1（反代不在本机时改成
+# 其网段），安装摘要按域名打印访问入口与核对清单。
+ask_domain(){
+  [ -n "$DOMAIN" ] && return 0          # --domain 已显式指定，不再问
+  [ "$ASSUME_YES" = "1" ] && return 0   # 非交互模式
+  [ "$CAN_PROMPT" = "0" ] && return 0   # 无 /dev/tty（纯管道无终端）
+  printf '\n访问形态：将通过域名 + HTTPS 反代访问时填域名（如 pangu.example.com）\n'
+  printf '  直接 http://IP:%s 访问则留空（回车默认 IP 直连）。\n' "${LISTEN_ADDR##*:}"
+  printf '域名/留空 [IP 直连]: '
+  local ans=""
+  read -r -t 90 ans </dev/tty || ans=""
+  ans="$(printf '%s' "$ans" | tr -d ' \t"'"'"'')"
+  [ -z "$ans" ] && { info "按 IP:端口 直连形态安装（要改域名形态可重跑 install.sh --domain=NAME，幂等）"; return 0; }
+  DOMAIN="$ans"
+  ok "域名部署形态: $DOMAIN（将预置 PANGU_COOKIE_SECURE=1 / PANGU_TRUSTED_PROXIES=127.0.0.1）"
+}
+ask_domain
 ok "部署形态: $MODE  目标目录: $INSTALL_DIR"
 
 # ── 解析版本 ─────────────────────────────────────
@@ -970,6 +989,32 @@ ENV
     ok "已生成 $INSTALL_DIR/.env（含随机数据库密码，权限 600）"
   else
     ok "沿用既有 .env（升级不覆盖）"
+    # 升级必校验 compose 插值必需变量：旧 .env（更早版本生成、手改丢行等）缺
+    # POSTGRES_PASSWORD 时，docker compose 会在 parsing 阶段直接报错，卡在拉
+    # 镜像之后极难定位。缺了就补随机密码——注意若 postgres 数据卷此前已用旧
+    # 密码初始化过，POSTGRES_PASSWORD 改动不会重置卷内密码，需要用户把旧密码
+    # 填回。
+    if ! grep -Eq '^POSTGRES_PASSWORD=.+' "$INSTALL_DIR/.env"; then
+      local PG_PASS_FIX
+      PG_PASS_FIX="$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)"
+      # 空值行（POSTGRES_PASSWORD=）先删掉再追加，避免同名键出现两次。
+      sed -i '/^POSTGRES_PASSWORD=$/d' "$INSTALL_DIR/.env"
+      printf 'POSTGRES_PASSWORD=%s\n' "$PG_PASS_FIX" >> "$INSTALL_DIR/.env"
+      warn ".env 缺 POSTGRES_PASSWORD，已补随机密码"
+      warn "若 postgres 数据卷此前已用旧密码初始化（pangu 起来后连不上库），请把旧密码填回 .env"
+    fi
+    # 镜像与 tag 也要跟着本次安装走：.env 只在首次生成时写过 PANGU_TAG/PANGU_IMAGE，
+    # 沿用不更新会让「升级」后 compose 仍拉旧版本镜像，白装。
+    if grep -q '^PANGU_TAG=' "$INSTALL_DIR/.env"; then
+      sed -i "s|^PANGU_TAG=.*|PANGU_TAG=$VERSION|" "$INSTALL_DIR/.env"
+    else
+      printf 'PANGU_TAG=%s\n' "$VERSION" >> "$INSTALL_DIR/.env"
+    fi
+    if grep -q '^PANGU_IMAGE=' "$INSTALL_DIR/.env"; then
+      sed -i "s|^PANGU_IMAGE=.*|PANGU_IMAGE=$IMAGE|" "$INSTALL_DIR/.env"
+    else
+      printf 'PANGU_IMAGE=%s\n' "$IMAGE" >> "$INSTALL_DIR/.env"
+    fi
     # 但代理要跟着本次安装走：它不是"首次生成"的密钥，升级时也该同步，
     # 否则用户改了代理后重跑安装，旧 .env 里的旧代理还在生效。
     if [ -n "$INSTALL_PROXY" ]; then

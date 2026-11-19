@@ -2,6 +2,26 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.5] - 2026-11-19
+
+### 新增
+
+- **install.sh 交互询问访问形态（域名 vs IP）**：选完部署形态后追加一问——填域名
+  即按「反代 TLS」形态预置 `PANGU_COOKIE_SECURE=1` / `PANGU_TRUSTED_PROXIES=127.0.0.1`
+  并按域名打印访问入口；留空 = IP 直连（行为与原来一致）。`--domain` 已指定、
+  `-y` 非交互、无 /dev/tty 时跳过提问。
+
+### 修复
+
+- **升级重跑时 .env 校验缺失必需变量**：此前「沿用既有 .env」分支只同步装机代理，
+  旧 `.env` 缺 `POSTGRES_PASSWORD` 时 docker compose 在 parsing 阶段直接报错
+  （`required variable POSTGRES_PASSWORD is missing a value`），卡在拉镜像之后
+  极难定位。现在升级时自动补缺失的 `POSTGRES_PASSWORD`（随机生成，并提示：若
+  postgres 数据卷已用旧密码初始化、起来后连不上库，需把旧密码填回）。
+- **升级不再沿用旧镜像 tag**：`PANGU_TAG`/`PANGU_IMAGE` 只在首次生成 .env 时写入，
+  重跑 install.sh 升级后 compose 仍拉旧版本镜像——升级形同虚设。现在每次安装都
+  同步为本次目标版本。
+
 ## [0.1.4] - 2026-11-19
 
 ### 修复
