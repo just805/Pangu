@@ -2,6 +2,19 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.4] - 2026-11-19
+
+### 修复
+
+- **一键更新自 v0.1.0 起恒报「仓库没有最新正式版」**（`selfupdate/github.go`）：
+  改名批次把 `Repo` 写成了完整仓库形态 `github.com/just805/pangu`，而更新检查的
+  GitHub API 路径是自己拼的（`api.github.com/repos/<Repo>/releases/latest`），
+  拼出来成了 `/repos/github.com/just805/pangu/…`——恒 404，被前端解读成「没有
+  最新正式版」。改回 `owner/name` 形态（`just805/pangu`）。带 v0.1.0–v0.1.3 的
+  存量部署因二进制内含旧值，需手动升级到 v0.1.4 一次（Docker：pull 新镜像重建；
+  二进制：重跑 install.sh），此后一键更新恢复正常。新增回归断言
+  `selfupdate/github_test.go`（Repo 形态 + URL 形状 + 资产名）。
+
 ## [0.1.3] - 2026-11-19
 
 ### 新增

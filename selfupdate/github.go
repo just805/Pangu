@@ -17,7 +17,11 @@ import (
 // 一条远程代码执行通道，对一个渗透测试平台来说这个口子开不得。二开/镜像要在构建时
 // 用 `-ldflags "-X github.com/just805/pangu/selfupdate.Repo=owner/name"` 覆盖，
 // 这样改的是产物本身，不是运行期可篡改的开关。
-var Repo = "github.com/just805/pangu"
+//
+// 值必须是 owner/name（如 just805/pangu），不能带 github.com/ 前缀——下面的
+// API 路径是自己拼的，带了前缀会变成 /repos/github.com/owner/name 而恒 404
+//（改名批次踩过：报「仓库没有最新正式版」，实为路径拼错）。
+var Repo = "just805/pangu"
 
 func latestURL() string { return "https://api.github.com/repos/" + Repo + "/releases/latest" }
 
