@@ -36,10 +36,18 @@ jobs:
             echo "smoke version (pinned): $PANGU_SMOKE_VERSION"
             exit 0
           fi
-          TAG="$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)"
-          [ -n "$TAG" ] || { echo "无法解析最新 Release tag"; exit 1; }
+          # runner 出口 IP 共享，匿名 GitHub API 60 次/小时极易撞限流——重试 +
+          # 兜底钉已知版本（解析不到不再 fail 整个 job）。
+          TAG=""
+          for i in 1 2 3; do
+            TAG="$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
+            [ -n "$TAG" ] && break
+            echo "attempt $i: 解析失败（限流？），30s 后重试"
+            sleep 30
+          done
+          [ -n "$TAG" ] || TAG="v0.1.9"
           echo "PANGU_SMOKE_VERSION=$TAG" >> "$GITHUB_ENV"
-          echo "smoke version (latest): $TAG"
+          echo "smoke version: $TAG"
 
       - name: Run install.sh (interactive via pty)
         run: |
