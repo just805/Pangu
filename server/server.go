@@ -912,6 +912,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/proxypool/check", s.proxyPoolCheck)
 	mux.HandleFunc("POST /api/settings/web-search/test", s.testWebSearch)
 	mux.HandleFunc("GET /api/report", s.getReport)
+	mux.HandleFunc("GET /api/report/summary", s.reportSummaryGet)
+	mux.HandleFunc("PUT /api/report/summary", s.reportSummaryPut)
+	mux.HandleFunc("POST /api/report/summary", s.reportSummaryGenerate)
 	mux.HandleFunc("GET /api/report/export", s.exportTaskDocx)
 	mux.HandleFunc("GET /api/findings/{id}/export", s.exportFindingDocx)
 	mux.HandleFunc("GET /api/tools/inventory", s.toolsInventory)
@@ -4489,6 +4492,19 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	if t == nil {
 		writeErr(w, 404, "no active task")
 		return
+	}
+	// A17 页面报告与导出同源：改从 findings 表出（含 reporter 正文/复测/流量
+	// 证据/情报富化/执行摘要），与 Word 导出共用 assembleTaskReport——前端
+	// 预览与客户拿到的 Word 是同一份报告的两个视图。PG 不可用时回落探索
+	// 节点渲染（无库形态仍能给页面一份基本报告）。
+	if s.m.pg != nil {
+		in, err := s.assembleTaskReport(r.Context(), t)
+		if err == nil {
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(report.TaskMarkdown(in)))
+			return
+		}
 	}
 	findings, _ := t.Store.ListByKind(db.KindFinding, 1000) // 纯漏洞（事实是独立的 KindFact，不进报告）
 	counts := map[string]int{}

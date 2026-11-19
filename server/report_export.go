@@ -5,6 +5,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -101,17 +102,13 @@ func (s *Server) reportRetests(findings []*db.DBFinding) map[int64][]*db.Finding
 	return out
 }
 
-// exportTaskDocx 任务总报告(Word)。
-func (s *Server) exportTaskDocx(w http.ResponseWriter, r *http.Request) {
-	t := s.m.ResolveTask(r.URL.Query().Get("task"))
-	if t == nil {
-		writeErr(w, 404, "no active task")
-		return
-	}
+// assembleTaskReport 任务报告数据共享组装（A17）：findings 表为唯一取数源，
+// 页面预览（GET /api/report 的 Markdown）与 Word 导出走同一份数据——
+// 含执行摘要（A13，settings kv）、漏洞情报富化（A11，vulnintel 情报库）。
+func (s *Server) assembleTaskReport(ctx context.Context, t *Task) (report.TaskDocxInput, error) {
 	findings, err := s.m.pg.ListFindingsForExport(db.FindingFilter{TaskID: t.ID, ExcludeStatuses: exportExcludeStatuses}, nil)
 	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
+		return report.TaskDocxInput{}, err
 	}
 	counts := map[string]int{}
 	appendix := map[string][]string{}
@@ -130,7 +127,8 @@ func (s *Server) exportTaskDocx(w http.ResponseWriter, r *http.Request) {
 		appendix[ty] = names
 	}
 	goals, _ := t.Store.ListByKind(db.KindGoal, 1000)
-	doc := report.BuildTaskDocx(report.TaskDocxInput{
+	execSummary, _, _ := s.m.pg.GetSetting(execSummaryKey(t.ID))
+	return report.TaskDocxInput{
 		Title:          fmt.Sprintf("渗透测试报告 — %s", t.Description),
 		Goal:           t.Goal,
 		GeneratedAt:    time.Now(),
@@ -144,7 +142,67 @@ func (s *Server) exportTaskDocx(w http.ResponseWriter, r *http.Request) {
 		AppendixAssets: appendix,
 		PageHeader:     fmt.Sprintf("渗透测试报告 — %s", t.Description),
 		ArtifactImage:  s.artifactImageResolver(t.ID, 0),
-	})
+		ExecSummary:    execSummary,
+		CVEInfo:        s.cveIntelFor(ctx, findings),
+	}, nil
+}
+
+// cveIntelFor 批量查情报库做 A11 富化：从 name/vulnclass/summary 提取 CVE 编号
+// （上限 60 个查询），vulnintel 未启用/查不到的编号静默跳过（报告不出现空富化块）。
+func (s *Server) cveIntelFor(ctx context.Context, findings []*db.DBFinding) map[string]*report.CVEIntel {
+	if s.m == nil || s.m.vulnintel == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var ids []string
+	for _, f := range findings {
+		for _, id := range report.ExtractCVEIDs(f.Name, f.VulnClass, f.Summary) {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	if len(ids) > 60 {
+		ids = ids[:60]
+	}
+	out := make(map[string]*report.CVEIntel, len(ids))
+	for _, id := range ids {
+		d, err := s.m.vulnintel.GetVuln(ctx, id)
+		if err != nil || d == nil {
+			continue
+		}
+		out[id] = &report.CVEIntel{
+			CVEID:       d.CVEID,
+			Severity:    d.Severity,
+			Score:       d.Score,
+			Vector:      d.Vector,
+			KEV:         d.KEV,
+			Published:   d.Published,
+			Title:       d.Title,
+			Description: d.Description,
+			Refs:        len(d.Refs),
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// exportTaskDocx 任务总报告(Word)。
+func (s *Server) exportTaskDocx(w http.ResponseWriter, r *http.Request) {
+	t := s.m.ResolveTask(r.URL.Query().Get("task"))
+	if t == nil {
+		writeErr(w, 404, "no active task")
+		return
+	}
+	in, err := s.assembleTaskReport(r.Context(), t)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	doc := report.BuildTaskDocx(in)
 	name := fmt.Sprintf("pangu-report-task%s-%s.docx", t.ID, time.Now().Format("20060102"))
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 	w.Header().Set("Content-Disposition", attachmentDisposition(name))

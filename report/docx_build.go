@@ -42,6 +42,12 @@ type TaskDocxInput struct {
 	// ArtifactImage 证据附件图片解析器（v0.5.0）：Markdown 里
 	// ![说明](artifact:<id>) 会内嵌为图片；nil = 降级为文字说明。
 	ArtifactImage func(id int64) (data []byte, caption string, ok bool)
+	// ExecSummary 执行摘要（A13）：LLM 从 findings 聚合、存库后可人工修订。
+	// 空 = 报告省略该章（兼容历史任务）。
+	ExecSummary string
+	// CVEInfo 漏洞情报富化（A11）：CVE-ID → 情报快照。server 组装时查
+	// vulnintel 情报库；nil/缺项 = 该 finding 不渲染富化块。
+	CVEInfo map[string]*CVEIntel
 }
 
 func sevRankKey(f *db.DBFinding) int {
@@ -97,6 +103,19 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 	d.TOC()
 	d.PageBreak()
 
+	// ── 执行摘要（A13）：管理层风险结论，LLM 聚合 + 可人工修订；空则省略 ──
+	if strings.TrimSpace(in.ExecSummary) != "" {
+		d.H1("执行摘要")
+		for _, line := range strings.Split(strings.ReplaceAll(in.ExecSummary, "\r\n", "\n"), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			writeMarkdownish(d, line)
+		}
+		d.P("")
+	}
+
 	// ── 一、评估概览 ──
 	d.H1("一、评估概览")
 	if len(in.AssetCounts) > 0 {
@@ -126,6 +145,10 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 		}
 	}
 	d.TableFills([]string{"严重度", "数量"}, rows, fills)
+	// 统计图（A6）：表格旁放图，商业报告第一眼质感。出图失败静默跳过。
+	if png := severityDistChart(in.Findings); png != nil {
+		d.Image(png, chartCaption("漏洞严重度分布"))
+	}
 
 	// 漏洞类别分布(同类别多主机上报在这里折叠成一行——"永恒之蓝×16 主机"
 	// 在总览就是一个数字,不用翻 16 页明细)
@@ -136,6 +159,9 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 			rows = append(rows, []string{g.class, fmt.Sprint(len(g.items)), fmt.Sprint(len(g.assets))})
 		}
 		d.Table([]string{"漏洞类别", "条数", "涉及资产数"}, rows)
+		if png := classDistChart(in.Findings); png != nil {
+			d.Image(png, chartCaption("漏洞类别分布"))
+		}
 	}
 	d.PageBreak()
 
@@ -211,6 +237,11 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 			if strings.TrimSpace(f.Summary) != "" {
 				d.H4("摘要")
 				d.P(f.Summary)
+			}
+			// 漏洞情报富化（A11）：已知漏洞类自动带 CVSS/KEV/官方描述。
+			if md := enrichmentMarkdown(in, f); md != "" {
+				d.H4("漏洞情报（平台情报库自动富化）")
+				writeMarkdownish(d, md)
 			}
 			if body := strings.TrimSpace(f.Report); body != "" {
 				d.H4("详细报告")

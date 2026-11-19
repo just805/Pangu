@@ -1027,6 +1027,20 @@ export const api = {
     if (!r.ok) throw new Error(`report: ${r.status}`);
     return r.text();
   },
+  // 执行摘要（A13）：读 / LLM 生成 / 人工保存
+  reportSummary: async (task?: string) => {
+    if (MOCK) return { summary: "", exists: false };
+    const r = await get<{ summary: string; exists: boolean }>(`/report/summary${tq(task)}`);
+    return r;
+  },
+  generateReportSummary: async (task?: string) => {
+    if (MOCK) return { summary: "（mock 摘要）", generated: true };
+    return post<{ summary: string; generated: boolean }>(`/report/summary${tq(task)}`);
+  },
+  saveReportSummary: async (task: string, summary: string) => {
+    if (MOCK) return { summary, saved: true };
+    return put<{ summary: string; saved: boolean }>(`/report/summary${tq(task)}`, { summary });
+  },
   // 任务总报告 Word 导出(浏览器侧触发下载;需带 JWT)
   downloadTaskDocx: async (task: string) => {
     const token = getToken();

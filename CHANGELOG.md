@@ -2,6 +2,29 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.6] - 2026-11-19
+
+### 新增（报告交付批次：A6/A11/A13/A17，对标路线图 v0.3.96 顺延件）
+
+- **A17 页面报告与导出同源**：`GET /api/report` 改从 findings 表出（此前走探索
+  节点，与 Word 导出不同源）——新增 `report.TaskMarkdown` 渲染器，与
+  `BuildTaskDocx` 共用 `assembleTaskReport` 组装的同一份数据（含 reporter 正文、
+  复测记录、流量证据、资产可读名、附录清单）。前端预览与客户拿到的 Word 是
+  同一份报告的两个视图；PG 不可用时回落旧的探索节点渲染。
+- **A13 执行摘要**：LLM 从漏洞发现聚合生成管理层风险结论（总体态势 + 关键风险 +
+  处置建议，≤350 字），存 settings kv 可人工修订后随报告导出。新端点
+  `GET/PUT/POST /api/report/summary?task=`；LLM 走任务 planner 通道（与压缩器同款
+  taskLLMRuntime，带额度故障转移）；输入为严重度统计 + top 12 主要发现摘要，不让
+  模型读全量正文。前端报告页新增执行摘要卡片（生成/编辑/保存）。
+- **A11 漏洞情报富化**：「已知漏洞」类 finding 在报告（md 与 docx）自动附情报库
+  快照——CVSS 评分/向量、NVD 严重度、CISA KEV 在野利用标记、公告日期、官方标题
+  与描述（截断 400 字）、参考条数。从 name/vulnclass/summary 提取 CVE 编号
+  （去重上限 8 个/条、查询上限 60 个/任务），vulnintel 未启用或查不到的静默跳过。
+- **A6 统计图嵌入 Word**：新增 `github.com/wcharczuk/go-chart/v2` 依赖，评估概览
+  章的严重度分布/类别分布（Top 10）条形图 PNG 嵌入 docx（表格旁放图）。文字渲染
+  复用内嵌仿宋_GB2312——默认字体无 CJK 字形；出图失败静默降级（表格仍在），
+  全等值数据显式给 Y 轴范围防零区间报错。
+
 ## [0.1.5] - 2026-11-19
 
 ### 新增
