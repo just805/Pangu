@@ -69,6 +69,7 @@ PANGU 安装脚本
   --listen=ADDR          监听地址（默认 :8787）
   --proxy=ADDR           流量记录代理地址（默认 127.0.0.1:8788）
   --domain=NAME          域名部署（如 pangu.example.com）：预置 HTTPS 相关环境变量并按域名打印访问入口；不填 = 按 IP:端口 访问（交互安装时也会询问，留空 = IP 直连）
+  --trusted-proxy=IP     域名形态下反代所在 IP（默认 127.0.0.1，即反代同机；不同机填反代 IP，登录防爆破才按真实客户端计数）
   --install-proxy=URL    安装期出网代理，如 http://10.0.0.14:7897（默认取 \$HTTPS_PROXY）
   -y, --yes              非交互，全部用默认值
   -h, --help             显示帮助
@@ -98,7 +99,8 @@ for arg in "$@"; do
     --listen=*)        LISTEN_ADDR="${arg#--listen=}" ;;
     --proxy=*)         PROXY_ADDR="${arg#--proxy=}" ;;
     --install-proxy=*) INSTALL_PROXY="${arg#--install-proxy=}" ;;
-    --domain=*)        DOMAIN="${arg#--domain=}" ;;
+    --domain=*)        CLI_DOMAIN="${arg#--domain=}" ;;          # 先存 CLI 值，install.env 加载后再合并（CLI 优先）
+    --trusted-proxy=*) CLI_TRUSTED_PROXY="${arg#--trusted-proxy=}" ;;
     --user=*)          RUN_USER="${arg#--user=}" ;;
     --pg-super=*)      PG_SUPER="${arg#--pg-super=}" ;;
     --image=*)         IMAGE="${arg#--image=}" ;;
@@ -108,6 +110,28 @@ for arg in "$@"; do
     *) die "未知参数: $arg（用 --help 查看帮助）" ;;
   esac
 done
+
+# ── 安装器状态沿用（升级不丢部署形态决策）──────────
+# DOMAIN/TRUSTED_PROXY 持久化到 <安装目录>/install.env：重跑升级时沿用上次的
+# 部署形态——否则交互重跑没填域名会把 systemd/compose 里的 COOKIE_SECURE/
+# TRUSTED_PROXIES 静默清掉（域名形态漂移回 IP 形态，HTTPS 登录直接坏）。
+# CLI 参数（--domain/--trusted-proxy）优先于状态文件；--domain=（空值）清除
+# 域名形态回 IP 直连。状态文件随安装目录走，--dir 换目录即换状态。
+INSTALL_STATE="$INSTALL_DIR/install.env"
+if [ -f "$INSTALL_STATE" ]; then
+  # shellcheck disable=SC1090
+  . "$INSTALL_STATE"
+  [ -n "$DOMAIN" ] && info "沿用既有域名部署形态: $DOMAIN（--domain= 显式覆盖/清除）"
+fi
+# CLI 参数合并（source 会覆盖同名变量，故 CLI 值最后落）：
+# --domain= 传空串 = 清除域名形态回 IP 直连；--trusted-proxy= 显式指定反代 IP。
+if [ -n "${CLI_DOMAIN+x}" ]; then
+  DOMAIN="$CLI_DOMAIN"
+  [ -z "$DOMAIN" ] && info "已按 --domain= 清除域名形态（IP 直连）"
+fi
+if [ -n "${CLI_TRUSTED_PROXY:-}" ]; then
+  TRUSTED_PROXY="$CLI_TRUSTED_PROXY"
+fi
 
 # ── 前置检查 ─────────────────────────────────────
 DIR_EXPLICIT="${DIR_EXPLICIT:-0}"
@@ -412,12 +436,14 @@ fi
 
 # 域名部署的环境预置：--domain 提供时假定走「反代 TLS」形态——
 #   - PANGU_COOKIE_SECURE=1：HTTPS 下会话 cookie 才带 Secure；
-#   - PANGU_TRUSTED_PROXIES=127.0.0.1：本机反代是最常见形态（nginx/caddy 同机），
-#     反代在其它机器时改写成对应网段（安装摘要里会再提醒）。
+#   - PANGU_TRUSTED_PROXIES：本机反代是最常见形态（默认 127.0.0.1）；反代在
+#     其它机器时由交互追问（或 --trusted-proxy=）写入反代 IP——否则登录防
+#     爆破按反代 IP 计数，所有用户会被一起锁。
+TRUSTED_PROXY="${TRUSTED_PROXY:-127.0.0.1}"
 DOMAIN_ENV=""
 if [ -n "$DOMAIN" ]; then
   DOMAIN_ENV="Environment=PANGU_COOKIE_SECURE=1
-Environment=PANGU_TRUSTED_PROXIES=127.0.0.1"
+Environment=PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY"
 fi
 
 # ── 选择部署形态 ─────────────────────────────────
@@ -480,9 +506,35 @@ ask_domain(){
     return 0
   fi
   DOMAIN="$ans"
-  ok "域名部署形态: $DOMAIN（将预置 PANGU_COOKIE_SECURE=1 / PANGU_TRUSTED_PROXIES=127.0.0.1）"
+  ok "域名部署形态: $DOMAIN（将预置 PANGU_COOKIE_SECURE=1 / PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY）"
+  # 反代位置追问：TRUSTED_PROXIES 错了会导致登录防爆破按反代 IP 计数——所有
+  # 用户共享一个计数器，一人输错密码全员被锁。这里直接问清，写对值。
+  printf '反向代理与 Pangu 同机吗？(Y/n，同机 = 默认 127.0.0.1) '
+  local rp=""
+  read -r -t 60 rp </dev/tty || rp=""
+  case "$(printf '%s' "$rp" | tr -d ' \t' | tr 'A-Z' 'a-z')" in
+    n|no)
+      printf '反代所在机器 IP（如 10.0.0.9，回车 = 保持 127.0.0.1 装完手改 .env）: '
+      local rip=""
+      read -r -t 60 rip </dev/tty || rip=""
+      rip="$(printf '%s' "$rip" | tr -d ' \t')"
+      if printf '%s' "$rip" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'; then
+        TRUSTED_PROXY="$rip"
+        ok "PANGU_TRUSTED_PROXIES 将设为 $rip"
+      else
+        warn "IP 不合法，保持 127.0.0.1（装完在 .env 里改 PANGU_TRUSTED_PROXIES）"
+      fi
+      ;;
+    *) : ;;  # 同机（默认）
+  esac
 }
 ask_domain
+# 形态决策落盘（重跑沿用；显式 CLI 参数已覆盖，这里写最终值）
+mkdir -p "$INSTALL_DIR"
+{
+  printf 'DOMAIN=%s\n' "$DOMAIN"
+  printf 'TRUSTED_PROXY=%s\n' "$TRUSTED_PROXY"
+} > "$INSTALL_STATE"
 ok "部署形态: $MODE  目标目录: $INSTALL_DIR"
 
 # ── 解析版本 ─────────────────────────────────────
@@ -1047,13 +1099,20 @@ ENV
     fi
   fi
   # 域名部署：预置 HTTPS 相关变量（反代 TLS 下会话 cookie 才带 Secure）。
-  # 幂等：升级重跑不重复追加、已有值不覆盖。
+  # 幂等：升级重跑不重复追加、已有值不覆盖。TRUSTED_PROXY 来自交互追问或
+  # --trusted-proxy=（默认 127.0.0.1 = 反代同机）。
   if [ -n "$DOMAIN" ] && ! grep -q '^PANGU_COOKIE_SECURE=' "$INSTALL_DIR/.env"; then
-    printf 'PANGU_COOKIE_SECURE=1\nPANGU_TRUSTED_PROXIES=127.0.0.1\n' >> "$INSTALL_DIR/.env"
-    ok "已按域名部署预置 PANGU_COOKIE_SECURE=1 / PANGU_TRUSTED_PROXIES=127.0.0.1（反代不在本机时改网段）"
+    printf 'PANGU_COOKIE_SECURE=1\nPANGU_TRUSTED_PROXIES=%s\n' "$TRUSTED_PROXY" >> "$INSTALL_DIR/.env"
+    ok "已按域名部署预置 PANGU_COOKIE_SECURE=1 / PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY"
   fi
 
   local PORT="${LISTEN_ADDR##*:}" PROXY_PORT="${PROXY_ADDR##*:}"
+  # 域名形态 UI 只经反代访问：宿主端口绑 127.0.0.1，8787 不裸奔公网（IP 形态
+  # 才直接对外，UI_BIND 为空 = 绑全部网卡）。
+  local UI_BIND=""
+  if [ -n "$DOMAIN" ]; then
+    UI_BIND="127.0.0.1:"
+  fi
   cat > "$INSTALL_DIR/docker-compose.yml" <<COMPOSE
 # 由 install.sh 生成。数据在 ./data，skills 在 ./skills，数据库在卷 pgdata。
 services:
@@ -1091,7 +1150,9 @@ services:
     ports:
       # 对外端口从 .env 的 PANGU_UI_PORT 读（默认 8787）。走 Cloudflare 等
       # CDN 代理时改成其支持的端口（如 2052），改完 docker compose up -d 生效。
-      - "\${PANGU_UI_PORT:-8787}:8787"
+      # 域名形态绑定 127.0.0.1：UI 只经反代访问，8787 不裸奔公网（IP 形态才
+      # 直接对外）。
+      - "${UI_BIND}\${PANGU_UI_PORT:-8787}:8787"
       - "127.0.0.1:\${PROXY_PORT:-8788}:8788"
       # 回连端口映射（按需放开）：容器内 MSF/listener 监听的端口要映射到宿主，
       # agent 才能收到 reverse shell。示例：
@@ -1511,7 +1572,8 @@ for _n in $(seq 1 30); do
     if [ -n "$DOMAIN" ]; then
       # 域名部署：访问入口走反代，摘要给出反代指向与安全变量核对项。
       ok "服务已就绪 → 域名入口 https://${DOMAIN}（反代指向 http://127.0.0.1:${PORT}，TLS 就绪后即为 HTTPS）"
-      info "域名部署核对：①会话 cookie 已预置 PANGU_COOKIE_SECURE=1；②PANGU_TRUSTED_PROXIES=127.0.0.1（反代不在本机时改成其网段，否则登录防爆破按反代 IP 计）；③建议再设 PANGU_HSTS_MAX_AGE=31536000；④首次访问 ${DOMAIN} 设置管理员密码（公网部署建议先设 PANGU_INIT_TOKEN）"
+      warn "域名形态：反代（nginx/caddy + TLS）就绪前【不要】用 http://IP:${PORT} 登录——cookie 带 Secure 标记，纯 HTTP 下浏览器拒收，表现为登录后立刻弹回登录页。先用 IP 访问需临时把 .env 的 PANGU_COOKIE_SECURE 改 0 后 docker compose up -d / systemctl restart pangu"
+      info "域名部署核对：①DNS 已把 ${DOMAIN} 解析到本机；②反代指向 http://127.0.0.1:${PORT}（域名形态 UI 已只绑 127.0.0.1，不直接对外）；③PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY（反代不在本机时改成其 IP/网段，否则登录防爆破按反代 IP 计）；④建议再设 PANGU_HSTS_MAX_AGE=31536000；⑤首次访问 https://${DOMAIN} 设置管理员密码（公网部署建议先设 PANGU_INIT_TOKEN）"
     else
       ok "服务已就绪 → http://${HOST_IP:-127.0.0.1}:${PORT}（首次访问设置管理员密码）"
     fi
@@ -1538,6 +1600,9 @@ if [ "$MODE" = "binary" ]; then
     warn "60s 内未就绪，查看日志: journalctl -u $SERVICE -n 50"
   fi
 else
-  warn "60s 内未就绪，查看日志: cd $INSTALL_DIR && docker compose logs --tail 50"
+  warn "60s 内未就绪——自动诊断："
+  ( cd "$INSTALL_DIR" && docker compose ps ) || true
+  ( cd "$INSTALL_DIR" && docker compose logs --tail 30 ) 2>/dev/null || true
+  warn "常见原因：①.env 的 POSTGRES_PASSWORD 与既有 postgres 数据卷不匹配（pangu 日志见 'password authentication failed'）——把初始化数据卷时的旧密码填回 .env 后 docker compose up -d；②镜像拉取不完整——docker compose pull 后重启；③端口被占用——改 .env 的 PANGU_UI_PORT"
 fi
 exit 1

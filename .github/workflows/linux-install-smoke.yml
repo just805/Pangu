@@ -1,0 +1,83 @@
+# Linux 安装脚本【交互路径】冒烟：在 ubuntu runner 上用 pty 喂答跑 install.sh
+# 的交互全流程。macOS 冒烟恒带 --mode=binary -y（MODE 来自 CLI 参数），交互路径
+# （部署形态选择、域名提问、反代追问）零覆盖——v0.1.5 误删 choose_mode 调用就是
+# 它漏掉的。这里专门补这个洞：
+#   交互序列（printf 经 script 的 pty 转发到 /dev/tty）：
+#     ① 出网代理 → 回车（直连）
+#     ② 部署形态 → 回车（默认 binary）
+#     ③ 访问形态 → 粘完整 URL（http://www.example.com/，测域名归一化）
+#     ④ 反代同机 → 回车（默认 127.0.0.1）
+# 验证范围：提问序列正确 → 域名归一化生效 → binary 全链路（apt PostgreSQL →
+# config.json → systemd → health 200）→ systemd 单元带域名形态变量 → 幂等重跑。
+
+name: linux-install-smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "install.sh"
+      - ".github/workflows/linux-install-smoke.yml"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PANGU_SMOKE_VERSION: ""
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve smoke version
+        run: |
+          if [ -n "$PANGU_SMOKE_VERSION" ]; then
+            echo "smoke version (pinned): $PANGU_SMOKE_VERSION"
+            exit 0
+          fi
+          TAG="$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)"
+          [ -n "$TAG" ] || { echo "无法解析最新 Release tag"; exit 1; }
+          echo "PANGU_SMOKE_VERSION=$TAG" >> "$GITHUB_ENV"
+          echo "smoke version (latest): $TAG"
+
+      - name: Run install.sh (interactive via pty)
+        run: |
+          set -o pipefail
+          # 注意：喂答序列与交互提问一一对应；改 install.sh 的提问顺序要同步这里。
+          printf '\n\nhttp://www.example.com/\n\n' | \
+            script -qfec "bash install.sh --version=$PANGU_SMOKE_VERSION" /dev/null 2>&1 | tee /tmp/install.log
+          grep -q "域名部署形态: www.example.com" /tmp/install.log \
+            || { echo "── 域名归一化断言失败，log tail ──"; tail -40 /tmp/install.log; exit 1; }
+          grep -q "部署形态: binary" /tmp/install.log \
+            || { echo "── 部署形态断言失败（choose_mode 未跑？）──"; tail -40 /tmp/install.log; exit 1; }
+          grep -q "SHA256 校验通过" /tmp/install.log
+          grep -q "数据库 pangu 就绪" /tmp/install.log
+          grep -q "服务已就绪" /tmp/install.log \
+            || { echo "── 服务未就绪，log tail ──"; tail -40 /tmp/install.log; exit 1; }
+
+      - name: Verify domain-mode env in systemd unit
+        run: |
+          unit=/etc/systemd/system/pangu.service
+          grep -q "PANGU_COOKIE_SECURE=1" "$unit" || { echo "systemd 单元缺 COOKIE_SECURE"; exit 1; }
+          grep -q "PANGU_TRUSTED_PROXIES=127.0.0.1" "$unit" || { echo "systemd 单元缺 TRUSTED_PROXIES"; exit 1; }
+          echo "domain-mode env OK"
+
+      - name: Verify service (health / database)
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/health)
+          [ "$code" = "200" ] || { echo "health=$code"; journalctl -u pangu -n 50; exit 1; }
+          echo "health 200 OK"
+          sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='pangu'" | grep -q 1
+          sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='pangu'" | grep -q 1
+
+      - name: Verify idempotent re-run (interactive again)
+        run: |
+          md5_before=$(md5sum /opt/pangu/config.json | cut -d' ' -f1)
+          printf '\n\n\n\n' | \
+            script -qfec "bash install.sh --version=$PANGU_SMOKE_VERSION" /dev/null 2>&1 | tee /tmp/reinstall.log
+          grep -q "沿用既有 config.json" /tmp/reinstall.log
+          md5_after=$(md5sum /opt/pangu/config.json | cut -d' ' -f1)
+          [ "$md5_before" = "$md5_after" ] || { echo "config.json 被覆盖！"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/health)
+          [ "$code" = "200" ] || { echo "reinstall health=$code"; exit 1; }
+          echo "idempotent re-run OK"

@@ -2,6 +2,30 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.8] - 2026-11-19
+
+### 新增（部署链路整体收口）
+
+- **域名形态 UI 端口收口**：域名形态下 docker compose 的 8787 映射改绑
+  `127.0.0.1`——UI 只经反代访问，不再公网裸奔（IP 形态行为不变）。
+- **域名形态反代位置追问**：交互安装填域名后追问「反代是否同机」，不同机可填
+  反代 IP 直接写入 `PANGU_TRUSTED_PROXIES`（否则登录防爆破按反代 IP 计数，
+  一人输错密码全员被锁）；CLI 新增 `--trusted-proxy=IP`。
+- **安装器状态沿用**：DOMAIN/TRUSTED_PROXY 持久化到 `<安装目录>/install.env`，
+  升级重跑沿用上次的部署形态决策——否则交互重跑没填域名会把 systemd/compose
+  里的 COOKIE_SECURE/TRUSTED_PROXIES 静默清掉（域名形态漂移回 IP 形态）。
+  CLI 参数优先于状态文件；`--domain=`（空值）显式清除域名形态。
+- **部署完成摘要补「IP 直连登录死锁」警告**：域名形态 cookie 带 Secure，反代
+  就绪前用 `http://IP:8787` 登录会被浏览器拒收（登录后弹回登录页）——装完时
+  明确告知，附临时关闭方法与反代配置核对清单。
+- **docker 不健康时自动诊断**：health 60s 未就绪自动 `docker compose ps` +
+  日志 dump，并给出常见原因对照（POSTGRES_PASSWORD 与既有数据卷不匹配 / 镜像
+  拉取不完整 / 端口占用）。
+- **新增 Linux 交互冒烟 CI**（`linux-install-smoke.yml`）：ubuntu runner 上用
+  pty 喂答跑交互全流程（部署形态选择 → 域名提问 → 归一化断言 → binary 部署
+  → systemd 单元域名变量断言 → 幂等重跑）。macOS 冒烟恒带 `--mode=binary -y`
+  不经过交互提问，v0.1.5 误删 choose_mode 的回归正是这条路径漏掉的。
+
 ## [0.1.7] - 2026-11-19
 
 ### 修复（install.sh 交互路径回归，v0.1.5 引入）
