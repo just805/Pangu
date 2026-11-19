@@ -44,9 +44,12 @@ jobs:
       - name: Run install.sh (interactive via pty)
         run: |
           set -o pipefail
-          # 注意：喂答序列与交互提问一一对应；改 install.sh 的提问顺序要同步这里。
+          # 注意：①喂答序列与交互提问一一对应，改 install.sh 的提问顺序要同步这里；
+          # ②install.sh 强制 root（Linux 分支），runner 用户经 sudo 提权——-E 保留
+          #   PANGU_SMOKE_VERSION，stdin 管道经 sudo 传给 script 的 pty，喂答照常到
+          #   达 /dev/tty。
           printf '\n\nhttp://www.example.com/\n\n' | \
-            script -qfec "bash install.sh --version=$PANGU_SMOKE_VERSION" /dev/null 2>&1 | tee /tmp/install.log
+            sudo -E script -qfec "bash install.sh --version=$PANGU_SMOKE_VERSION" /dev/null 2>&1 | tee /tmp/install.log
           grep -q "域名部署形态: www.example.com" /tmp/install.log \
             || { echo "── 域名归一化断言失败，log tail ──"; tail -40 /tmp/install.log; exit 1; }
           grep -q "部署形态: binary" /tmp/install.log \
@@ -78,7 +81,7 @@ jobs:
         run: |
           md5_before=$(md5sum /opt/pangu/config.json | cut -d' ' -f1)
           printf '\n\n\n\n' | \
-            script -qfec "bash install.sh --version=$PANGU_SMOKE_VERSION" /dev/null 2>&1 | tee /tmp/reinstall.log
+            sudo -E script -qfec "bash install.sh --version=$PANGU_SMOKE_VERSION" /dev/null 2>&1 | tee /tmp/reinstall.log
           grep -q "沿用既有 config.json" /tmp/reinstall.log
           md5_after=$(md5sum /opt/pangu/config.json | cut -d' ' -f1)
           [ "$md5_before" = "$md5_after" ] || { echo "config.json 被覆盖！"; exit 1; }
