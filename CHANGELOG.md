@@ -2,6 +2,16 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.10] - 2026-11-19
+
+### 修复
+
+- **install.sh set -u 下 PROXY_MODE 未定义即死**（v0.1.9 引入）：PROXY_MODE/
+  COOKIE_SECURE_VAL 的初始化写在了 install.env 合并逻辑之后——脚本 `set -u`，
+  合并处引用未定义变量直接退出（本地 Ubuntu 容器复现确认）。所有部署
+  （交互/-y/docker/binary）都在前置检查前死于此。初始化已移到状态文件加载前。
+  此前两轮冒烟（linux/macos）失败即此因，CI 的 ci.yml（go/前端）不受影响。
+
 ## [0.1.9] - 2026-11-19
 
 ### 新增（域名部署开箱即用）

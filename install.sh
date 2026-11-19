@@ -119,6 +119,10 @@ done
 # TRUSTED_PROXIES 静默清掉（域名形态漂移回 IP 形态，HTTPS 登录直接坏）。
 # CLI 参数（--domain/--trusted-proxy）优先于状态文件；--domain=（空值）清除
 # 域名形态回 IP 直连。状态文件随安装目录走，--dir 换目录即换状态。
+# 注意：PROXY_MODE/COOKIE_SECURE_VAL 必须在加载/合并前初始化——脚本 set -u，
+# 未定义变量直接报错（v0.1.9 首个交互冒烟即栽在这：初始化写在了合并之后）。
+PROXY_MODE=""
+COOKIE_SECURE_VAL="0"
 INSTALL_STATE="$INSTALL_DIR/install.env"
 if [ -f "$INSTALL_STATE" ]; then
   # shellcheck disable=SC1090
@@ -458,10 +462,9 @@ TRUSTED_PROXY="${TRUSTED_PROXY:-127.0.0.1}"
 # 域名形态的反代方案：caddy（脚本自动装并配置，推荐）/ existing（用户自备）/
 # none（暂不配，先用 IP:8787 访问）。cookie Secure 跟随方案：caddy/existing=1，
 # none=0（配好反代后再开）。
-PROXY_MODE=""
-COOKIE_SECURE_VAL="0"
 # DOMAIN_ENV（binary systemd 的域名形态环境变量）延迟到 ask_domain 之后组装——
 # cookie Secure/受信代理的最终值要等反代方案选定（此前在此处组装会拿到初值）。
+# PROXY_MODE/COOKIE_SECURE_VAL 的初始化在 install.env 加载前（见上方状态沿用段）。
 DOMAIN_ENV=""
 
 # ── 选择部署形态 ─────────────────────────────────
