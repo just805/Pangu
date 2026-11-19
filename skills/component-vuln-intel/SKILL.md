@@ -35,7 +35,8 @@ tags:
 ## nuclei 的正确用法
 
 - 先确认模板覆盖：`nuclei -t <匹配的模板/标签> -u <url> -severity high,critical -stats`；
-- 平台工具 `scan_with_nuclei` 会组好命令并留流量；自己跑时结果落文件后 `save_evidence`；
+- 平台工具 `scan_with_nuclei` 会组好命令并留流量（**自动追加 `-proxy` 出口代理**，无需手工加）；
+- 自己手工跑 nuclei 时出口代理要显式带：`${EGRESS_PROXY:+-proxy "$EGRESS_PROXY"}`（未配置代理时变量为空，不发射空 `-proxy`）。nuclei v3 没有 `-random-agent` / `-user-agent` flag，照抄旧示例会直接报错；
 - 模板命中 ≠ 漏洞：核对请求/响应是否真的触发（有些模板只匹配版本 banner）；
 - 高危模板（如 RCE）先确认目标有授权且不影响业务，再执行。
 

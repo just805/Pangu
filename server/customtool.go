@@ -456,27 +456,36 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	return actool.Text(actool.Capture(tc, string(b))), nil
 }
 
-// httpProxyTransport builds a Transport for the http tool's proxy config, or nil
-// (direct). use_recording_proxy routes through the recording proxy + trusts its CA.
-func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
-	proxyStr := strings.TrimSpace(spec.Proxy)
-	var caFile string
-	if spec.UseRecordingProxy {
-		if addr := s.m.ProxyAddr(); addr != "" {
-			proxyStr = "http://" + addr
-			caFile = s.m.ProxyCACert()
-		}
+// normalizeProxyAddr 同时接受 host:port 与 scheme://host:port——前者自动补
+// http://，后者原样透传。此前勾选记录代理时无条件二次拼 scheme，已带 scheme
+// 的地址会变成 http://http://… 而整个失效。
+func normalizeProxyAddr(addr string) string {
+	a := strings.TrimSpace(addr)
+	if a == "" || strings.Contains(a, "://") {
+		return a
 	}
-	if proxyStr == "" {
+	return "http://" + a
+}
+
+// platformEgressTransport 返回走平台出口（Manager.ProxyAddr()：捕获开=记录
+// 代理并信任其 MITM CA；否则=全局代理）的 Transport；未配置时返回 nil（直连）。
+// 自定义 http 工具与任务登录自检共用——此前两者用裸 http.Client 从平台真实
+// IP 直连目标，绕过记录代理与出口池。
+func (s *Server) platformEgressTransport() *http.Transport {
+	if s.m == nil {
+		return nil // 裸 Server（部分测试/极端路径）：无出口可走，直连
+	}
+	addr := s.m.ProxyAddr()
+	if addr == "" {
 		return nil
 	}
-	pu, err := url.Parse(proxyStr)
+	pu, err := url.Parse(normalizeProxyAddr(addr))
 	if err != nil {
 		return nil
 	}
 	tr := &http.Transport{Proxy: http.ProxyURL(pu)}
-	if caFile != "" {
-		if pem, err := os.ReadFile(caFile); err == nil {
+	if ca := s.m.ProxyCACert(); ca != "" {
+		if pem, err := os.ReadFile(ca); err == nil {
 			pool := x509.NewCertPool()
 			if pool.AppendCertsFromPEM(pem) {
 				tr.TLSClientConfig = &tls.Config{RootCAs: pool}
@@ -484,6 +493,20 @@ func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
 		}
 	}
 	return tr
+}
+
+// httpProxyTransport builds a Transport for the http tool's proxy config, or nil
+// (direct). use_recording_proxy 或未配置 proxy 时走平台出口（见
+// platformEgressTransport）；显式 proxy 仍可覆盖（记录代理优先级更高）。
+func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
+	if spec.UseRecordingProxy || strings.TrimSpace(spec.Proxy) == "" {
+		return s.platformEgressTransport()
+	}
+	pu, err := url.Parse(normalizeProxyAddr(spec.Proxy))
+	if err != nil {
+		return nil
+	}
+	return &http.Transport{Proxy: http.ProxyURL(pu)}
 }
 
 // ---------- helpers ----------

@@ -3,6 +3,10 @@ package intercept
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -69,7 +73,7 @@ func TestReviewInputExplicitBackgroundOnly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if in.Version != 4 || in.WorkingDir != "/tmp/task-1" {
+			if in.Version != 5 || in.WorkingDir != "/tmp/task-1" {
 				t.Fatalf("wrong environment: %+v", in)
 			}
 			if source == BackgroundUserMessage {
@@ -118,6 +122,7 @@ func TestReviewInputAuditRetention(t *testing.T) {
 		json.RawMessage(`{"version":2,"history":[{"tool_use_id":"old"}],"correlation":"exact","tool_name":"Read","arguments":{}}`),
 		json.RawMessage(`{"version":3,"background":{"source":"worker_summary","text":"old summary"},"tool_name":"Read","arguments":{}}`),
 		json.RawMessage(`{"version":4,"tool_name":"Read","arguments":{}}`),
+		json.RawMessage(`{"version":5,"tool_name":"Read","arguments":{}}`),
 	} {
 		dec := Decision{Action: "allow", ModelInput: input, ModelInputDigest: digestInput(input)}
 		for _, status := range []string{"allowed", "pending", "denied"} {
@@ -154,7 +159,7 @@ func TestAutomaticAllowRetainsActualReviewContext(t *testing.T) {
 	reason := "实际操作：读取测试文件；成功后的后果：返回文件内容；命中规则：A5"
 	a := auditFor(ctx, Decision{Action: "allow", Message: reason, ModelInput: raw, ModelInputDigest: digestInput(raw)}, args, "allowed")
 	var saved ReviewInput
-	if json.Unmarshal(a.ModelInput, &saved) != nil || saved.Background == nil || saved.Background.Text != "请读取刚创建的文件" || saved.Version != 4 || a.Correlation != "exact" || a.ToolUseID != "current" || a.InitialReason != reason {
+	if json.Unmarshal(a.ModelInput, &saved) != nil || saved.Background == nil || saved.Background.Text != "请读取刚创建的文件" || saved.Version != 5 || a.Correlation != "exact" || a.ToolUseID != "current" || a.InitialReason != reason {
 		t.Fatal("automatic allow lost the model's input or explanation")
 	}
 	if a.Context != nil || a.UserMessage != "" {
@@ -180,5 +185,136 @@ func TestReviewWorkingDirectoryPreservesExplicitProvenance(t *testing.T) {
 		} else if in.Background == nil || *in.Background != background {
 			t.Fatal("raw user message was replaced by augmented Agent input")
 		}
+	}
+}
+
+func TestReviewInputScriptSnapshotInterpreterArgument(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "shared", "scripts")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(sub, "exp.py")
+	body := "import os\nos.system('id')\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithReviewContext(t.Context(), dir, ReviewBackground{})
+	in, err := BuildReviewInput(ctx, "Bash", json.RawMessage(`{"command":"cd /tmp && python3 shared/scripts/exp.py --flag value"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Scripts) != 1 || len(in.UnresolvedScripts) != 0 {
+		t.Fatalf("wrong script collection: %+v / %v", in.Scripts, in.UnresolvedScripts)
+	}
+	if in.Scripts[0].Path != path || in.Scripts[0].Content != body || in.Scripts[0].Truncated {
+		t.Fatalf("wrong snapshot: %+v", in.Scripts[0])
+	}
+}
+
+func TestReviewInputScriptSnapshotExtensionToken(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pwn.sh")
+	if err := os.WriteFile(path, []byte("echo hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithReviewContext(t.Context(), dir, ReviewBackground{})
+	in, err := BuildReviewInput(ctx, "Bash", json.RawMessage(`{"command":"bash -c 'chmod +x ./pwn.sh && ./pwn.sh'"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// bash -c 的值是命令串而非脚本路径，但扩展名规则仍应捕获 ./pwn.sh。
+	if len(in.Scripts) != 1 || in.Scripts[0].Path != path || in.Scripts[0].Content != "echo hi\n" {
+		t.Fatalf("wrong snapshot: %+v", in.Scripts)
+	}
+}
+
+func TestReviewInputDynamicScriptPathGoesUnresolved(t *testing.T) {
+	dir := t.TempDir()
+	ctx := WithReviewContext(t.Context(), dir, ReviewBackground{})
+	in, err := BuildReviewInput(ctx, "Bash", json.RawMessage(`{"command":"python3 $HOME/payload.py && python3 build/exp-*.py"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Scripts) != 0 {
+		t.Fatalf("dynamic paths must not be snapshotted: %+v", in.Scripts)
+	}
+	if len(in.UnresolvedScripts) != 2 {
+		t.Fatalf("expected unresolved entries: %v", in.UnresolvedScripts)
+	}
+}
+
+func TestReviewInputScriptSnapshotBoundsAndSkipsNonRegular(t *testing.T) {
+	dir := t.TempDir()
+	var files []string
+	for i := 0; i < scriptMaxFiles; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("s%d.py", i))
+		if err := os.WriteFile(p, []byte("pass\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, p)
+	}
+	extra := filepath.Join(dir, "s9.py")
+	if err := os.WriteFile(extra, []byte("pass\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 目录伪装成脚本：绝不能读。
+	if err := os.Mkdir(filepath.Join(dir, "dir.py"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := "python3"
+	for _, p := range files {
+		cmd += " " + p
+	}
+	cmd += " " + extra + " " + filepath.Join(dir, "dir.py")
+	ctx := WithReviewContext(t.Context(), "", ReviewBackground{})
+	in, err := BuildReviewInput(ctx, "Bash", json.RawMessage(`{"command":`+strconv.Quote(cmd)+`}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Scripts) != scriptMaxFiles {
+		t.Fatalf("expected %d snapshots, got %d", scriptMaxFiles, len(in.Scripts))
+	}
+	// 无工作目录锚点（working_directory 为空）的绝对路径仍可解析；超限与
+	// 目录条目都进 unresolved。
+	if len(in.UnresolvedScripts) < 2 {
+		t.Fatalf("over-limit and non-regular entries must be unresolved: %v", in.UnresolvedScripts)
+	}
+}
+
+func TestReviewInputScriptSnapshotTruncation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.py")
+	if err := os.WriteFile(path, []byte(strings.Repeat("a", scriptMaxFile*2)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithReviewContext(t.Context(), dir, ReviewBackground{})
+	in, err := BuildReviewInput(ctx, "Bash", json.RawMessage(`{"command":"python3 big.py"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Scripts) != 1 || !in.Scripts[0].Truncated || len(in.Scripts[0].Content) > scriptMaxFile || !utf8.ValidString(in.Scripts[0].Content) {
+		t.Fatalf("truncation bounds violated: %+v", in.Scripts)
+	}
+}
+
+func TestReviewInputScriptSnapshotMultibyteBoundary(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cn.sh")
+	// 中文注释跨 32KB 边界被截断：尾部不得出现残缺 rune。
+	body := strings.Repeat("中", scriptMaxFile)
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithReviewContext(t.Context(), dir, ReviewBackground{})
+	in, err := BuildReviewInput(ctx, "Bash", json.RawMessage(`{"command":"bash cn.sh"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Scripts) != 1 || !utf8.ValidString(in.Scripts[0].Content) {
+		t.Fatalf("snapshot content invalid: %+v", in.Scripts)
+	}
+	if len(in.Scripts[0].Content) == 0 || len(in.Scripts[0].Content) > scriptMaxFile {
+		t.Fatalf("snapshot bounds violated: %d bytes", len(in.Scripts[0].Content))
 	}
 }

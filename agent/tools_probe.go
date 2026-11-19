@@ -15,7 +15,9 @@ package agent
 // **只落脚本 + 组命令，不自己发请求**——流量录制、审批管控、审计全部经由 Bash
 // 自动生效，平台自己发请求会绕过整条管控链。
 //
-// 脚本幂等落盘（runDir/pangu-probe.sh），后续调用只传 URL 列表，命令保持最短。
+// 脚本落盘（runDir/probe.sh，每次调用覆盖写回平台版本——脚本名不带产品名后，
+// 可能与模型自建文件撞名，覆盖写保证执行的永远是平台脚本），后续调用只传 URL
+// 列表，命令保持最短。
 // 不带 --noproxy：运行环境若有录制代理（http(s)_proxy 环境变量），curl 自动走
 // 代理，流量照常进流量查看器；没有则直连，与手写 curl -k 行为一致。
 
@@ -31,7 +33,7 @@ import (
 )
 
 const httpProbeScript = `#!/usr/bin/env bash
-# pangu http_probe: 对每个 URL 输出一行紧凑 JSON（url/status/bytes/time_ms/title/server/content_type/redirect）
+# http_probe: 对每个 URL 输出一行紧凑 JSON（url/status/bytes/time_ms/title/server/content_type/redirect）
 for u in "$@"; do
   f=$(mktemp); h=$(mktemp)
   out=$(curl -sS -k -L --max-time 10 -w '%{http_code} %{time_total}' -o "$f" -D "$h" "$u" 2>/dev/null)
@@ -70,15 +72,13 @@ PYEOF
 done
 `
 
-// ensureProbeScript 幂等落盘探活脚本；失败返回空串（调用方退化为让模型手写）。
+// ensureProbeScript 落盘探活脚本（每次调用覆盖写——见文件头注释）；失败返回
+// 空串（调用方退化为让模型手写）。
 func (t *ToolSet) ensureProbeScript() string {
 	if strings.TrimSpace(t.runDir) == "" {
 		return ""
 	}
-	p := filepath.Join(t.runDir, "pangu-probe.sh")
-	if _, err := os.Stat(p); err == nil {
-		return p
-	}
+	p := filepath.Join(t.runDir, "probe.sh")
 	if err := os.WriteFile(p, []byte(httpProbeScript), 0o755); err != nil {
 		return ""
 	}

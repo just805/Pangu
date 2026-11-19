@@ -394,6 +394,13 @@ func (s *Server) reconcileHostdOnce() bool {
 		log.Printf("[hostd] 助手版本过旧（不支持版本上报与自换装），需重跑一次 install.sh 完成引导")
 		return true
 	}
+	// B9：助手版本高于主程序（主程序被手动回滚到旧版）时跳过换装——把助手
+	// 一起拽回旧版会静默撤销助手已知的修复（降级防护、sha256 强校验等）。
+	// 此时提示重跑 install.sh 恢复配套，而不是自动降级。
+	if cmp, ok := selfupdate.CompareVersions(got, want); ok && cmp > 0 {
+		log.Printf("[hostd] 助手版本 %s 高于主程序 %s（主程序被手动回滚？），跳过换装；请重跑 install.sh 恢复配套", got, want)
+		return true
+	}
 	log.Printf("[hostd] 版本不一致（助手 %s / 主程序 %s），请求助手自我换装", got, want)
 
 	payload, _ := json.Marshal(map[string]string{

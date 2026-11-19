@@ -49,6 +49,10 @@ Subdomain takeover occurs when:
 | `dnsreaper` | Multi-provider takeover scanner |
 | `subzy` | Fast subdomain takeover verification |
 
+> 平台内手工跑这些出站扫描器时，出口代理显式带上（未配置代理时变量为空、不发射空 `-proxy`）：
+> `nuclei ... ${EGRESS_PROXY:+-proxy "$EGRESS_PROXY"}`；curl/wget 已继承 `HTTP(S)_PROXY` 无需处理；
+> 平台工具 `scan_with_nuclei` 自动带 `-proxy`。
+
 ---
 
 ## 3. SERVICE PROVIDER FINGERPRINT TABLE

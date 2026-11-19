@@ -230,7 +230,9 @@ func (e *Engine) doHTTP(id int64, rawURL string) {
 	if err != nil {
 		return
 	}
-	req.Header.Set("User-Agent", "pangu-enrich/1.0")
+	// 对目标站点的探测 UA 不带产品名：产品标识会落在被渗透方的访问日志里，
+	// 蓝队会把它们当成攻击者的签名（假 IoC、误导应急响应）。
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return

@@ -225,6 +225,9 @@ func proxyEnv(proxyAddr, caCert string) []string {
 		"HTTP_PROXY=" + proxyAddr, "HTTPS_PROXY=" + proxyAddr,
 		"http_proxy=" + proxyAddr, "https_proxy=" + proxyAddr,
 		"ALL_PROXY=" + proxyAddr, "all_proxy=" + proxyAddr, // socks5 egress: curl reads only this
+		// 平台自有出口代理变量：落盘脚本与 skills 手工命令模板用它引用出口代理
+		// （${EGRESS_PROXY:+-proxy "$EGRESS_PROXY"}），不与标准变量混淆。
+		"EGRESS_PROXY=" + proxyAddr,
 		"NODE_USE_ENV_PROXY=1", // Node 24+: honor HTTP(S)_PROXY in built-in fetch/http
 	}
 	if caCert != "" {
@@ -306,6 +309,18 @@ func workerArtifactSpec(runDir string) string {
 	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本次意图的专属工作目录 " + runDir + "**（已自动建好，直接用相对路径写在这里即可，无需再手动建目录）——**不要写 /tmp、不要用其它绝对路径**。"
 }
 
+// egressProxyGuidance tells the worker the egress proxy is pre-configured and
+// how to reference it in manual commands (EGRESS_PROXY is the platform-owned
+// variable injected by proxyEnv). Empty addr → no block (direct egress).
+func egressProxyGuidance(proxyAddr string) string {
+	if proxyAddr == "" {
+		return ""
+	}
+	return "\n\n**出口代理**：本任务的出站流量已走平台出口代理 " + proxyAddr +
+		"——Bash 环境已注入 HTTP(S)_PROXY / ALL_PROXY / EGRESS_PROXY，curl、python-requests 等无需手动配置；" +
+		"工具不支持环境变量时用其代理参数引用 $EGRESS_PROXY（如 ${EGRESS_PROXY:+-proxy \"$EGRESS_PROXY\"}，未配置时不发射空参数）。"
+}
+
 // ensureRunDir builds and creates an agent's working directory under base:
 // <base>/tasks/<taskID> for planner/main; <base>/tasks/<taskID>/i<intentID> for a
 // worker (intentID<=0 → task dir only). The "tasks/" segment groups per-task dirs
@@ -329,7 +344,7 @@ func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
 	// 作业硬尾巴（v0.4.63）：扫描器优先 + 技能路由，代码注入不可经 UI 改掉。
-	out := body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + scannerFirstGuidance + skillRoutingGuidance + execFaceWorkerGuidance +
+	out := body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + egressProxyGuidance(proxyAddr) + scannerFirstGuidance + skillRoutingGuidance + execFaceWorkerGuidance +
 		engagementFraming + impactVerificationGuidance
 	// 宿主工具清单：真正动手的是 worker，所以清单必须进 worker 的 system prompt。
 	// 之前只有 planner 的唤醒提示里有（用于「派意图选手段」），worker 看不到——

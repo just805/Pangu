@@ -2,7 +2,95 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.1.3] - 2026-11-19
+
+### 新增
+
+- **B1 会话吊销机制**：JWT 签发带 jti（16 字节随机）；新增「吊销全部会话」
+  （settings 哨兵时间戳，iat 早于它的 token 全部失效——含无 jti 的历史 token）
+  与「吊销当前会话」（按 jti 精确失效，不牵连其他设备）。此前唯一踢会话手段是
+  改密码轮 key。校验挂在 requireAuth，内存缓存 30s TTL 从 settings 刷新，
+  写端点主动更新；settings 读失败沿用旧值放行（fail-open，纵深防御不挡正常请求）。
+  旧 token（无 jti）不能逐个吊销，由哨兵覆盖。
+- **B1 管理面二次确认**：吊销全部会话要求请求体显式 `{"confirm":true}`，缺则 400；
+  前端侧边栏新增「吊销全部会话」红色菜单项 + AlertDialog 确认弹窗，成功后清
+  本地 token 跳登录页。同秒边界按 fail-closed 处理（吊销时点及同秒签发的 token
+  一律失效，重新登录即恢复）。
+- **B9 hostd 拒绝降级**：助手 `/self-upgrade` 在目标 tag 低于当前版本时 400 拒绝
+  （此前只校验格式，任何合法 tag 都会换装）；主程序版本对齐循环发现助手版本
+  高于自己时跳过并提示重跑 install.sh——主程序被手动回滚时不再把助手一起拽回
+  旧版静默撤销已知修复。
+- **issue #21.2 脚本正文可见性**：审查输入（ReviewInput v5）新增 scripts 字段——
+  工具命令引用的本地脚本文件（解释器后第一个非选项参数 / 带脚本扩展名的 token）
+  读出正文快照附给兜底 Judge，`python3 shared/scripts/exp.py` 这类命令不再只让
+  审查层看到文件名。限额：最多 4 个文件、单文件/总计 32KB/128KB；只读普通文件
+  （设备/管道/目录跳过，防 PreToolUse 挂死）；含变量/通配的动态路径进
+  unresolved_scripts 由 Judge 按内容不可见口径保守处理。Judge 提示词同步更新。
+
+### 变更
+
+- **新增平台自有出口代理变量 EGRESS_PROXY**（配合 PR #37 去品牌守卫）：agent 注入
+  Bash 的代理变量新增 EGRESS_PROXY（与 HTTP(S)_PROXY/ALL_PROXY 同源），worker
+  提示词与 skills 手工命令模板（recon-methodology、subdomain-takeover-test、
+  component-vuln-intel）全部用 `${EGRESS_PROXY:+-proxy "$EGRESS_PROXY"}` 引用——
+  未配置代理时不发射空 `-proxy`。HTTP(S)_PROXY/ALL_PROXY 等标准变量不受影响。
+
+### 修复
+
+- **js_audit 目标侧请求头对齐平台默认**：内嵌脚本的 User-Agent 由缺
+  (KHTML, like Gecko)、版本仅两段的畸形串，改为与 http_request / poc_scaffold
+  逐字节一致的 Windows x64 Chrome/131 完整串，并补 Accept / Accept-Language；
+  声明 Accept-Encoding: gzip, deflate 后按 Content-Encoding 真解压（gzip、zlib
+  头 deflate、裸 deflate 双回落），多值/未知编码或解压失败输出 warn 事件
+  （流被截断时返回已解出的部分），不再静默把乱码当正文扫描。旧 UA 是全网唯一、
+  可被目标侧跨请求关联的指纹。
+- **去掉会到达目标侧的产品标识（PR #37）**：PoC 脚手架模板、落盘脚本与代码内置
+  提示语里带着平台名。这些字符串会随请求或写入落到被渗透方——SSRF 的参数值、
+  上传请求的 multipart boundary、写进目标磁盘的文件正文、写进客户业务库的测试
+  对象名、agent 工作目录里的脚本文件名。客户侧蓝队会把它们当成攻击者的签名，
+  进而产生指向本产品的假 IoC、误导应急响应。
+  - poc_scaffold：SSRF canary（pangu-ssrf-canary → qa-ssrf-canary）、multipart
+    boundary、上传 shell 回显去名；JWT 弱口令候选表删掉改名时换上的平台名
+    （它不是常见弱口令），候选由 9 条变 8 条
+  - verification_depth / pentest-verification 内置提示语：写进目标测试对象的
+    marker 由 pangu-test-* 改为 qa-test-*，前缀仍可用于枚举清理
+  - 落盘脚本：pangu-probe.sh → probe.sh、pangu-jsaudit.py → js_audit.py（历史
+    批次已去 pojun，本批完成中性命名），脚本抬头同步去名
+  - enrich：对目标站点的探测 UA 去品牌
+  - 落盘脚本改为每次覆盖写（PR #37）：脚本文件名去掉产品名后，与模型在同一工作
+    目录自建的文件名可能撞车——现在每次调用都覆盖写回平台脚本
+  - 新增回归断言（PR #37）`agent/target_identity_test.go`：断言 PoC 模板、脚本、
+    系统提示语、skills 脚本不含平台/能力标识
+- **自定义 http 工具与任务登录自检接入平台出口**：两者此前用裸 http.Client 从
+  平台真实 IP 直连目标，绕过记录代理与出口池；use_recording_proxy 勾选后还会把
+  已带 scheme 的代理地址二次拼成 `http://http://…` 而失效。现在：
+  - 自定义 http 工具未配置 proxy 时默认走 Manager.ProxyAddr()（捕获开=记录代理
+    并信任 MITM CA；否则=全局代理），显式 proxy 仍可覆盖
+  - 任务登录自检同样走平台出口
+  - 代理地址同时接受 host:port 与 scheme://host:port 两种写法
+- **scan_with_nuclei 组出的命令强制带出口代理**：ToolSet.egressProxy 经
+  ScanArgs.Proxy 流进 vulnintel.BuildNucleiCmd，追加 `-proxy <url>`（两个独立
+  argv 元素，仍逐参数单引号）：裸 host:port 自动补 `http://`，已带 scheme 原样
+  透传，空代理不发射，含逗号直接报错
+  （-proxy 是 string[]，逗号会被当多代理分隔符拆坏），缺端口同样报错（nuclei
+  启动时按 host:port 探活，缺端口会直接 FATAL）。此前这条只靠 worker 提示词，
+  模型可以不执行。
+- **提示词删除 nuclei 不存在的 -random-agent**：v3.11.1 既无该 flag 也无
+  -user-agent，照抄示例必然失败；同时说明 scan_with_nuclei 已自动带 -proxy、
+  手工命令才需自己加。涉及 `agent/ops_tails.go`、
+  `skills/component-vuln-intel/SKILL.md`，以及 `skills/src-hunting/references/`
+  （recon-methodology、subdomain-takeover-test 的手工命令用
+  `${EGRESS_PROXY:+-proxy "$EGRESS_PROXY"}`，未配置代理时不发射空 -proxy）。
+- **工具 note 在配置出口代理时前置排查提示**（-silent 下空输出≠无命中），与正文
+  之间留空格分隔。
+- **GNU timeout 包装的秒数改由 TimeoutTotal 推导**（与 BuildNucleiCmd 共用
+  vulnintel.EffectiveTimeout 的 0→10m / >30m→30m 钳制），不再写死 600 秒。
+- **F5 llm 池非转移失败不清零**：Complete 的非转移错误（ctx 取消/确定性 4xx）
+  此前调 Pass() 把累计失败计数洗掉——每次都撞 401 的坏配置永远攒不起 trip 计数；
+  改为只交付错误、记账原地保留，与 Stream 非转移路径对齐。
+- **F6 llm 池中流失败计 Trip**：流式输出中途失败（部分内容已交付、无法转移）
+  此前完全不入账，坏节点攒不起熔断计数；现在 failover-eligible 的中流失败照常
+  Trip 记账（ctx 取消是调用方停读，不计）。
 
 ## [0.1.2] - 2026-11-18
 

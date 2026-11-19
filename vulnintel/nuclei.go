@@ -11,6 +11,8 @@ package vulnintel
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,7 +116,51 @@ type ScanArgs struct {
 	Target       string        // URL/host to scan
 	CVEID        string        // optional: restrict to templates mentioning this CVE
 	Severity     string        // optional: comma list critical,high,medium,low
+	Proxy        string        // optional egress proxy (validated by NormalizeNucleiProxy)
 	TimeoutTotal time.Duration // whole-run ceiling (default 10m, cap 30m)
+}
+
+// EffectiveTimeout 是整轮扫描超时的唯一口径：0→10m，>30m→30m。BuildNucleiCmd
+// 的 ctx 与 agent 侧 GNU timeout 包装的秒数共用它，两边永不漂移。
+func EffectiveTimeout(total time.Duration) time.Duration {
+	if total <= 0 {
+		return 10 * time.Minute
+	}
+	if total > 30*time.Minute {
+		return 30 * time.Minute
+	}
+	return total
+}
+
+// NormalizeNucleiProxy 校验并归一 nuclei 出口代理：
+//   - 空 → 空串（不发射 -proxy）
+//   - 含逗号 → 报错（-proxy 是 string[]，逗号会被当多代理分隔符拆坏）
+//   - 裸 host:port → 补 http://
+//   - 已带 scheme → 原样透传
+//   - 缺端口 → 报错（nuclei 启动时按 host:port 探活，缺端口会直接 FATAL）
+func NormalizeNucleiProxy(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", nil
+	}
+	if strings.Contains(p, ",") {
+		return "", fmt.Errorf("proxy 不能包含逗号（nuclei -proxy 按逗号拆成多代理）: %s", p)
+	}
+	if !strings.Contains(p, "://") {
+		host, port, err := net.SplitHostPort(p)
+		if err != nil || host == "" || port == "" {
+			return "", fmt.Errorf("proxy 缺端口（nuclei 启动时按 host:port 探活，缺端口会直接 FATAL）: %s", p)
+		}
+		return "http://" + p, nil
+	}
+	u, err := url.Parse(p)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("proxy 地址不合法: %s", p)
+	}
+	if u.Port() == "" {
+		return "", fmt.Errorf("proxy 缺端口（nuclei 启动时按 host:port 探活，缺端口会直接 FATAL）: %s", p)
+	}
+	return p, nil
 }
 
 // BuildNucleiCmd assembles the nuclei invocation. Templates restricted to the
@@ -129,13 +175,7 @@ func BuildNucleiCmd(ctx context.Context, templatesDir string, a ScanArgs) (*exec
 	if _, err := os.Stat(filepath.Join(templatesDir, ".git")); err != nil {
 		return nil, nil, fmt.Errorf("模板树不可用(%s):先等同步器完成初始化", templatesDir)
 	}
-	timeout := a.TimeoutTotal
-	if timeout <= 0 {
-		timeout = 10 * time.Minute
-	}
-	if timeout > 30*time.Minute {
-		timeout = 30 * time.Minute
-	}
+	timeout := EffectiveTimeout(a.TimeoutTotal)
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 
 	args := []string{
@@ -145,6 +185,16 @@ func BuildNucleiCmd(ctx context.Context, templatesDir string, a ScanArgs) (*exec
 		"-silent",
 		"-no-color",
 		"-disable-update-check",
+	}
+	proxy, perr := NormalizeNucleiProxy(a.Proxy)
+	if perr != nil {
+		cancel()
+		return nil, nil, perr
+	}
+	if proxy != "" {
+		// 两个独立 argv 元素（调用方 shellJoinArgs 逐参数单引号）——拼进单个
+		// 字符串会被 shell 二次拆词。
+		args = append(args, "-proxy", proxy)
 	}
 	if cve := strings.TrimSpace(a.CVEID); cve != "" {
 		templates := FindNucleiTemplates(templatesDir, cve)

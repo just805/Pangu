@@ -283,12 +283,14 @@ Priority 5: Import/export, template rendering → XXE, SSTI
 
 ```bash
 # 收窄：已知 CVE / 暴露面，不要当开场全量
-nuclei -u https://target.com -t cves/ -severity critical,high
-nuclei -u https://target.com -t exposures/
-nuclei -u https://target.com -t misconfiguration/
+# 平台内手工跑时出口代理显式带上（未配置代理时变量为空、不发射空 -proxy）；
+# 平台工具 scan_with_nuclei 已自动带 -proxy。
+nuclei -u https://target.com -t cves/ -severity critical,high ${EGRESS_PROXY:+-proxy "$EGRESS_PROXY"}
+nuclei -u https://target.com -t exposures/ ${EGRESS_PROXY:+-proxy "$EGRESS_PROXY"}
+nuclei -u https://target.com -t misconfiguration/ ${EGRESS_PROXY:+-proxy "$EGRESS_PROXY"}
 
 # On subdomain list:
-cat subdomains.txt | nuclei -t exposures/ -t misconfiguration/ -o exposed.txt
+cat subdomains.txt | nuclei -t exposures/ -t misconfiguration/ -o exposed.txt ${EGRESS_PROXY:+-proxy "$EGRESS_PROXY"}
 ```
 
 ---

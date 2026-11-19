@@ -16,8 +16,10 @@ const scannerFirstGuidance = `
   ` + "`ffuf -u <base>/FUZZ -w /opt/SecLists/Discovery/Web-Content/raft-medium-directories.txt -t 10 -rate 30 -timeout 10 -mc 200,204,301,302,401,403 -o ffuf.json -of json`" + `
   （或 ` + "`gobuster dir -u <base> -w 同字典 -t 10 --delay 200ms`" + `）。重点是 401/403 与非常规 200——后台/接口常在这里。
 - **组件/已知 CVE**：先 ` + "`search_vulns`" + ` 拿到组件对应 CVE，再
-  ` + "`nuclei -u <url> -severity critical,high -rate-limit 30 -random-agent -jsonl -o out.jsonl`" + `
-  （或先用 scan_with_nuclei 组命令）。空输出 = 无命中，不是失败；有命中必须复验后 report_finding。
+  ` + "`nuclei -u <url> -severity critical,high -rate-limit 30 -jsonl -o out.jsonl`" + `
+  （或先用 scan_with_nuclei 组命令——它会自动追加 -proxy 出口代理，手工命令才需自己加
+  ${EGRESS_PROXY:+-proxy "$EGRESS_PROXY"}）。nuclei v3 无 -random-agent/-user-agent flag，不要照抄旧示例。
+  空输出 = 无命中，不是失败；有命中必须复验后 report_finding。
 - **带参数的端点**：只有 GET/POST 参数、JSON 字段、cookie 这类输入点才谈注入。先用
   ` + "`sqlmap -u \"<url>\" --batch --level=2 --risk=1 --timeout 10 --flush-session [--data=... --cookie=...]`" + `
   做只读探测（level 2 / risk 1 不碰写操作），确认可注入后再取最小证明。

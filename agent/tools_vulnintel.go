@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"os/exec"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -350,24 +351,36 @@ func (t *ToolSet) scanWithNuclei() actool.CoreTool {
 			if a.Severity != "" && !nucleiSeverityRE.MatchString(strings.TrimSpace(a.Severity)) {
 				return actool.Errorf("severity 只允许 critical/high/medium/low/info 的逗号组合"), nil
 			}
+			// 出口代理强制注入（此前只靠 worker 提示词，模型可以不执行）：组出的
+			// 命令自带 -proxy，与 Bash 子进程的 EGRESS_PROXY 同源。
+			total := 10 * time.Minute
 			cmd, cancel, err := vulnintel.BuildNucleiCmd(context.Background(), nucleiTemplatesDir, vulnintel.ScanArgs{
 				Target:       a.Target,
 				CVEID:        a.CVEID,
 				Severity:     a.Severity,
-				TimeoutTotal: 10 * time.Minute,
+				Proxy:        t.egressProxy,
+				TimeoutTotal: total,
 			})
 			if err != nil {
 				return actool.Errorf("组装扫描命令失败: " + err.Error()), nil
 			}
 			defer cancel()
 			run := shellJoinArgs(cmd.Args)
-			// 总超时：有 GNU timeout 时包一层（Linux 生产默认有），否则依赖 Bash 工具自身超时。
+			// 总超时：有 GNU timeout 时包一层（Linux 生产默认有），否则依赖 Bash 工具
+			// 自身超时。秒数与 BuildNucleiCmd 共用 EffectiveTimeout 口径，不再写死。
 			if tp, terr := exec.LookPath("timeout"); terr == nil && runtime.GOOS != "windows" {
-				run = quoteShell(tp) + " 600 " + run
+				run = quoteShell(tp) + " " + strconv.Itoa(int(vulnintel.EffectiveTimeout(total).Seconds())) + " " + run
+			}
+			// 配置了出口代理时前置排查提示：-silent 下空输出≠无命中，代理故障同样
+			// 空输出（与正文之间留空行分隔）。
+			note := ""
+			if strings.TrimSpace(t.egressProxy) != "" {
+				note = "已自动带 -proxy " + strings.TrimSpace(t.egressProxy) +
+					"：排查空输出时先确认代理可达（-silent 下空输出≠无命中）。\n\n"
 			}
 			return jsonResult(map[string]any{
 				"run_with_bash": run,
-				"note": "用 Bash 工具执行上面这条命令(默认 10 分钟超时,超时会截断输出);" +
+				"note": note + "用 Bash 工具执行上面这条命令(默认 10 分钟超时,超时会截断输出);" +
 					"输出为 JSONL,每行一个模板命中;空输出=无命中。发现真实漏洞后走 report_finding 走正常上报。",
 			})
 		},

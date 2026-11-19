@@ -36,29 +36,83 @@ import (
 )
 
 const jsAuditScript = `#!/usr/bin/env python3
-"""pangu js_audit: SPA/webpack 前端源码泄露审计。
+"""js_audit: SPA/webpack 前端源码泄露审计。
 
-用法: python3 pangu-jsaudit.py --out <outdir> <url1> [url2 ...]
+用法: python3 js_audit.py --out <outdir> <url1> [url2 ...]
 url 可以是入口 HTML（提取 <script src>）或 .js 文件本体。
 每行输出一个 JSON 事件；最后一行 type=summary。仅标准库；
 http(s)_proxy 环境变量自动生效（流量走记录代理）；证书校验关闭（同 curl -k）。
 """
-import sys, os, json, re, base64, ssl, urllib.request, urllib.parse
+import sys, os, json, re, base64, ssl, gzip, zlib, urllib.request, urllib.parse
 
 MAX_BYTES = 3_000_000
 MAX_MAP_BYTES = 12_000_000
-UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
-      "Accept-Encoding": "identity"}
+# 请求头与平台 http_request / poc_scaffold 逐字节一致：全网唯一的畸形 UA 是
+# 可被目标侧跨请求关联的指纹。声明 gzip/deflate 后按 Content-Encoding 真解压。
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "Accept": "*/*",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "Accept-Encoding": "gzip, deflate"}
 
 _ctx = ssl.create_default_context()
 _ctx.check_hostname = False
 _ctx.verify_mode = ssl.CERT_NONE
 _opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_ctx))
 
+def _inflate_partial(data, wbits, out_cap=32_000_000):
+    # 截断流也要尽量救出已解出的部分：decompressobj 逐段喂，出错保留已产出。
+    # out_cap 兜住压缩比炸弹（12MB gzip 可膨胀数百倍）。
+    d = zlib.decompressobj(wbits)
+    out = b""
+    try:
+        out = d.decompress(data)
+        while len(out) < out_cap and d.unconsumed_tail:
+            chunk = d.decompress(d.unconsumed_tail)
+            if not chunk:
+                break
+            out += chunk
+            if len(out) >= out_cap:
+                out = out[:out_cap]
+                break
+        if len(out) < out_cap:
+            out = (out + d.flush())[:out_cap]
+    except Exception:
+        pass
+    return out
+
+def decode_body(enc, raw, url, cap):
+    # 多值/未知编码或解压失败 → 发 warn 事件并返回已解出的部分（或原始字节），
+    # 绝不把乱码当正文扫描。
+    encodings = [e.strip().lower() for e in enc.split(",") if e.strip()] if enc else []
+    data = raw
+    for e in encodings:
+        if e in ("identity", ""):
+            continue
+        if e == "gzip":
+            data = _inflate_partial(data, 47)  # 47 = 自动识别 gzip 头
+        elif e == "deflate":
+            data = _inflate_partial(data, -15)  # 裸 deflate 先试
+            if not data:
+                data = _inflate_partial(raw, 15)  # zlib 头回落
+        else:
+            emit({"type": "warn", "url": url,
+                  "note": "未知 Content-Encoding: " + e + "，按原始字节处理（可能影响扫描）"})
+            return data, "unknown-encoding"
+        if not data and raw:
+            emit({"type": "warn", "url": url,
+                  "note": "解压失败或流被截断（" + e + "），返回已解出的部分"})
+            return data, "decompress-failed"
+    return data, ""
+
 def fetch(url, cap=MAX_BYTES):
     req = urllib.request.Request(url, headers=UA)
     with _opener.open(req, timeout=15) as r:
-        return r.getcode(), r.read(cap + 1), r.geturl()
+        code = r.getcode()
+        raw = r.read(cap + 1)
+        enc = r.headers.get("Content-Encoding", "") or ""
+        final = r.geturl()
+    body, _ = decode_body(enc, raw, final, cap)
+    return code, body, final
 
 def emit(obj):
     print(json.dumps(obj, ensure_ascii=False))
@@ -307,15 +361,14 @@ if __name__ == "__main__":
     main()
 `
 
-// ensureJsAuditScript 幂等落盘审计脚本；失败返回空串（调用方退化为让模型手写）。
+// ensureJsAuditScript 落盘审计脚本（每次调用覆盖写回平台版本——脚本名不带
+// 产品名后，可能与模型自建文件撞名，覆盖写保证执行的永远是平台脚本）；失败
+// 返回空串（调用方退化为让模型手写）。
 func (t *ToolSet) ensureJsAuditScript() string {
 	if strings.TrimSpace(t.runDir) == "" {
 		return ""
 	}
-	p := filepath.Join(t.runDir, "pangu-jsaudit.py")
-	if _, err := os.Stat(p); err == nil {
-		return p
-	}
+	p := filepath.Join(t.runDir, "js_audit.py")
 	if err := os.WriteFile(p, []byte(jsAuditScript), 0o755); err != nil {
 		return ""
 	}

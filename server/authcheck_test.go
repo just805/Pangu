@@ -53,7 +53,7 @@ func TestRunAuthCheck(t *testing.T) {
 		ContentType: "json", UsernameField: "user", PasswordField: "pass",
 		Username: "alice", Password: "s3cret", SuccessContains: "token",
 	}
-	res := runAuthCheck(base)
+	res := runAuthCheck(base, nil)
 	if !res.OK || res.StatusCode != 200 {
 		t.Fatalf("json login should pass: %+v", res)
 	}
@@ -64,7 +64,7 @@ func TestRunAuthCheck(t *testing.T) {
 	// 失败凭据：401 + 缺 token → 不通过，且详情不含密码。
 	bad := *base
 	bad.Password = "wrong-pass"
-	res = runAuthCheck(&bad)
+	res = runAuthCheck(&bad, nil)
 	if res.OK {
 		t.Fatalf("bad credentials must fail: %+v", res)
 	}
@@ -75,14 +75,14 @@ func TestRunAuthCheck(t *testing.T) {
 	// form 形态
 	form := *base
 	form.ContentType = "form"
-	res = runAuthCheck(&form)
+	res = runAuthCheck(&form, nil)
 	if !res.OK || gotUser != "alice" || gotPass != "s3cret" {
 		t.Fatalf("form login should pass: %+v user=%s pass=%s", res, gotUser, gotPass)
 	}
 
 	// 未启用：明确说明而不是误判成功。
 	off := db.TaskAuthConfig{}
-	if res := runAuthCheck(&off); res.OK {
+	if res := runAuthCheck(&off, nil); res.OK {
 		t.Fatal("disabled config must not report ok")
 	}
 }
@@ -95,4 +95,74 @@ func stringsContains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// 自定义 http 工具与登录自检的出口链路：
+// - 代理地址同时接受 host:port 与 scheme://host:port（此前勾选记录代理时
+//   无条件二次拼 scheme，已带 scheme 的地址变成 http://http://… 而失效）；
+// - 未配置 proxy 时默认走平台出口（Manager.ProxyAddr），不再裸连。
+
+func TestNormalizeProxyAddr(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"127.0.0.1:8788", "http://127.0.0.1:8788"},
+		{"  127.0.0.1:8788  ", "http://127.0.0.1:8788"},
+		{"http://127.0.0.1:8788", "http://127.0.0.1:8788"},
+		{"socks5://10.0.0.1:1080", "socks5://10.0.0.1:1080"},
+		{"", ""},
+	} {
+		if got := normalizeProxyAddr(tc.in); got != tc.want {
+			t.Errorf("normalizeProxyAddr(%q)=%q want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestHTTPToolProxyTransport：未配置 proxy / 勾选记录代理 → 走平台出口；
+// 显式 proxy（两种写法）→ 覆盖。
+func TestHTTPToolProxyTransport(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer m.Close()
+	// SetGlobalProxy 有 scheme 校验（裸 host:port 会被拒），平台配置用带 scheme 的。
+	if err := m.SetGlobalProxy("http://127.0.0.1:8788"); err != nil {
+		t.Fatalf("SetGlobalProxy: %v", err)
+	}
+	s := &Server{m: m}
+	getProxy := func(tr *http.Transport) string {
+		if tr == nil || tr.Proxy == nil {
+			return ""
+		}
+		u, err := tr.Proxy(nil)
+		if err != nil {
+			return "ERR"
+		}
+		return u.String()
+	}
+	// 未配置 proxy → 平台出口（自动补 scheme，无双拼）。
+	tr := s.httpProxyTransport(httpExec{})
+	if got := getProxy(tr); got != "http://127.0.0.1:8788" {
+		t.Fatalf("default egress proxy = %q", got)
+	}
+	// use_recording_proxy → 同样是平台出口（捕获关时 ProxyAddr=全局代理）。
+	tr = s.httpProxyTransport(httpExec{UseRecordingProxy: true, Proxy: "http://should-be-ignored:1"})
+	if got := getProxy(tr); got != "http://127.0.0.1:8788" {
+		t.Fatalf("recording-proxy branch = %q", got)
+	}
+	// 显式 proxy 覆盖（裸 host:port 与 scheme:// 都接受）。
+	tr = s.httpProxyTransport(httpExec{Proxy: "10.0.0.9:3128"})
+	if got := getProxy(tr); got != "http://10.0.0.9:3128" {
+		t.Fatalf("explicit bare proxy = %q", got)
+	}
+	tr = s.httpProxyTransport(httpExec{Proxy: "socks5://10.0.0.9:1080"})
+	if got := getProxy(tr); got != "socks5://10.0.0.9:1080" {
+		t.Fatalf("explicit scheme proxy = %q", got)
+	}
+	// 平台未配置代理 → nil（直连），与旧行为一致。
+	if err := m.SetGlobalProxy(""); err != nil {
+		t.Fatalf("SetGlobalProxy clear: %v", err)
+	}
+	if tr := s.httpProxyTransport(httpExec{}); tr != nil {
+		t.Fatal("no proxy configured must yield nil transport (direct)")
+	}
 }

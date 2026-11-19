@@ -96,7 +96,18 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 					return // caller stopped consuming (cancel / early exit)
 				}
 				if err != nil {
-					return // terminal error already handed to the caller
+					// Mid-stream terminal error: partial output already delivered, so
+					// failing over would duplicate content — surface as-is. But a
+					// failover-eligible failure (5xx, 429, transport...) still trips
+					// health: otherwise a node that always dies mid-stream never
+					// accumulates a breaker count. ctx cancel is the caller stopping
+					// reads, not the provider failing — shouldFailover excludes it.
+					if shouldFailover(ctx, err) {
+						if p.health.Trip(m.ID, trimErr(err), isHardFailure(err)) {
+							log.Printf("[llmpool] 配置 %q(%s) 已熔断：%s", m.Name, m.Model, trimErr(err))
+						}
+					}
+					return
 				}
 			}
 			if failed == nil {
@@ -137,9 +148,11 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 			return msg, sr, usage, nil
 		}
 		if !shouldFailover(ctx, err) {
-			// Non-failover error (e.g. ctx cancel, deterministic 4xx): surface as-is
-			// without tripping health, matching Stream's non-failover path.
-			p.health.Pass(m.ID)
+			// Non-failover error (e.g. ctx cancel, deterministic 4xx): surface
+			// as-is without tripping health, matching Stream's non-failover
+			// path. Do NOT Pass() — clearing the failure count would let a
+			// profile that deterministically 4xx's every request never trip.
+			// Accounting stays as-is: the error is delivered, the ledger keeps.
 			return llm.Message{}, "", llm.Usage{}, err
 		}
 		lastErr = err

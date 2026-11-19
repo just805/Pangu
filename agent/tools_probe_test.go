@@ -32,11 +32,11 @@ func TestHTTPProbeComposesCommand(t *testing.T) {
 	if out.Count != 2 {
 		t.Fatalf("count=%d want 2（非法 URL 与重复项应剔除）", out.Count)
 	}
-	if !strings.Contains(out.RunWithBash, "pangu-probe.sh") || !strings.Contains(out.RunWithBash, "https://b.example.com/y?q=1") {
+	if !strings.Contains(out.RunWithBash, "probe.sh") || !strings.Contains(out.RunWithBash, "https://b.example.com/y?q=1") {
 		t.Fatalf("command=%q", out.RunWithBash)
 	}
 	// 脚本已落盘（调用方式是 `bash <script>`，不依赖可执行位——Windows 无 exec 位）。
-	script := filepath.Join(dir, "pangu-probe.sh")
+	script := filepath.Join(dir, "probe.sh")
 	info, err := os.Stat(script)
 	if err != nil {
 		t.Fatalf("script missing: %v", err)

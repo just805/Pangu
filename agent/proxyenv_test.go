@@ -23,7 +23,7 @@ func TestProxyEnvSetsAllProxyForSocks5(t *testing.T) {
 		}
 		return false
 	}
-	for _, want := range []string{"HTTP_PROXY=", "HTTPS_PROXY=", "ALL_PROXY=", "all_proxy="} {
+	for _, want := range []string{"HTTP_PROXY=", "HTTPS_PROXY=", "ALL_PROXY=", "all_proxy=", "EGRESS_PROXY="} {
 		if !has(want) {
 			t.Errorf("proxyEnv missing %s: %v", want, env)
 		}

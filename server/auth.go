@@ -312,13 +312,40 @@ func loginGuard(w http.ResponseWriter, r *http.Request, action string) bool {
 	return true
 }
 
-// signJWT issues a 7-day HS256 token for user PANGU.
+// signJWT issues a 7-day HS256 token for user PANGU. Each token carries a
+// random 16-byte jti so an individual session can be revoked precisely
+// without touching other devices (see session_revoke.go).
 func signJWT(key []byte) (string, error) {
+	jti, err := randomJTI()
+	if err != nil {
+		return "", err
+	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
 		Subject:   "PANGU",
+		ID:        jti,
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(jwtTTL)),
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 	}).SignedString(key)
+}
+
+// parseSessionJWT validates a token and returns the claims requireAuth needs
+// (jti + iat). It is the claims-aware counterpart of verifyJWT.
+func parseSessionJWT(tokenStr string, key []byte) (sessionClaims, bool) {
+	var claims jwt.RegisteredClaims
+	t, err := jwt.ParseWithClaims(tokenStr, &claims, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return key, nil
+	})
+	if err != nil || !t.Valid {
+		return sessionClaims{}, false
+	}
+	c := sessionClaims{JTI: claims.ID}
+	if claims.IssuedAt != nil {
+		c.IAT = claims.IssuedAt.Time
+	}
+	return c, true
 }
 
 // verifyJWT returns true when tokenStr is a valid, non-expired HS256 token.
@@ -383,15 +410,16 @@ func clearAuthCookie(w http.ResponseWriter) {
 	http.SetCookie(w, c)
 }
 
-// POST /api/auth/logout — 清除 HttpOnly 会话 cookie。无服务端状态可清（JWT 无
-// 黑名单，吊销靠改密码轮换 key），这个端点存在的意义是把「登出」从前端手搓
-// document.cookie 收敛为后端权威动作。
+// POST /api/auth/logout — 清除 HttpOnly 会话 cookie。JWT 服务端无逐请求黑名单
+// （需要踢会话用 /api/auth/revoke-current 或 /api/auth/revoke-all-sessions），
+// 这个端点存在的意义是把「登出」从前端手搓 document.cookie 收敛为后端权威动作。
 func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 	clearAuthCookie(w)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
-// requireAuth wraps h with JWT validation.
+// requireAuth wraps h with JWT validation plus session revocation checks
+// (sentinel timestamp + per-jti list, see session_revoke.go).
 // /api/auth/* and /api/health are exempt.
 func (s *Server) requireAuth(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -405,12 +433,69 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			writeErr(w, 401, "未授权")
 			return
 		}
-		if !verifyJWT(tok, s.currentJWTKey()) {
+		claims, ok := parseSessionJWT(tok, s.currentJWTKey())
+		if !ok {
 			writeErr(w, 401, "token 无效或已过期")
+			return
+		}
+		if !s.sessionAllowed(claims) {
+			writeErr(w, 401, "会话已被吊销，请重新登录")
 			return
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// POST /api/auth/revoke-all-sessions — 吊销全部会话（含历史无 jti token）。
+// 在 settings 落哨兵时间戳：iat 早于（含同秒，fail-closed）该时点的 token 全部
+// 失效。破坏性动作，要求请求体显式 {"confirm":true}，缺则 400——防误触/CSRF
+// 一发即全端登出。
+func (s *Server) authRevokeAllSessions(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	if _, ok := parseSessionJWT(extractToken(r), s.currentJWTKey()); !ok {
+		writeErr(w, 401, "未授权")
+		return
+	}
+	var req struct {
+		Confirm bool `json:"confirm"`
+	}
+	if err := decode(r, &req); err != nil || !req.Confirm {
+		writeErr(w, 400, `缺少二次确认：请求体必须显式包含 {"confirm":true}`)
+		return
+	}
+	if err := s.revokeAllSessions(pg); err != nil {
+		writeErr(w, 500, "吊销失败: "+err.Error())
+		return
+	}
+	clearAuthCookie(w)
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// POST /api/auth/revoke-current — 按 jti 精确吊销当前会话，不影响其他设备。
+// 旧版 token（无 jti）无法精确吊销，由哨兵（吊销全部会话）覆盖。
+func (s *Server) authRevokeCurrentSession(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	claims, ok := parseSessionJWT(extractToken(r), s.currentJWTKey())
+	if !ok {
+		writeErr(w, 401, "未授权")
+		return
+	}
+	if claims.JTI == "" {
+		writeErr(w, 400, "当前会话为旧版 token（无 jti），无法精确吊销；请使用「吊销全部会话」")
+		return
+	}
+	if err := s.revokeSessionJTI(pg, claims.JTI); err != nil {
+		writeErr(w, 500, "吊销失败: "+err.Error())
+		return
+	}
+	clearAuthCookie(w)
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // GET /api/auth/status — reports whether the admin password has been initialised.

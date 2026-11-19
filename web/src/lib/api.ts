@@ -293,6 +293,10 @@ export const api = {
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
+  // B1 会话吊销：全部会话走 settings 哨兵时间戳（含历史无 jti token），当前会话
+  // 按 jti 精确失效。全部吊销要求显式 confirm，缺则后端 400。
+  revokeAllSessions: () => post<{ ok: boolean }>("/auth/revoke-all-sessions", { confirm: true }),
+  revokeCurrentSession: () => post<{ ok: boolean }>("/auth/revoke-current", {}),
   // 登出：后端权威清除 HttpOnly 会话 cookie（内存 token 由调用方 auth.clearToken() 清）。
   logout: async (): Promise<void> => {
     if (MOCK) return;

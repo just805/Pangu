@@ -52,6 +52,10 @@ type Server struct {
 	dataDir  string       // browsable workspace root
 	jwtKey   atomic.Value // HS256 signing key ([]byte); replaceable to revoke sessions
 
+	// sessRev 是会话吊销状态的内存快照（哨兵时间戳 + jti 黑名单，30s TTL 从
+	// settings 刷新，写端点主动更新）。零值可用，见 session_revoke.go。
+	sessRev sessionRevocations
+
 	// 文档预览（v0.4.21）：Office/PDF 取样转图片，单 worker 串行（LibreOffice
 	// 的 UserInstallation 不能并发），queue 只放 artifact id。
 	previewOnce sync.Once
@@ -725,6 +729,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.authLogout)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
+	mux.HandleFunc("POST /api/auth/revoke-all-sessions", s.authRevokeAllSessions)
+	mux.HandleFunc("POST /api/auth/revoke-current", s.authRevokeCurrentSession)
 
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/stats", s.stats)

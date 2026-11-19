@@ -19,6 +19,17 @@ type ReviewBackground struct {
 	Truncated bool   `json:"truncated,omitempty"`
 }
 
+// ReviewScript is a bounded, read-only snapshot of a local script file that
+// the current tool call references (issue #21.2). The body travels to the
+// judge so "python3 shared/scripts/exp.py" is reviewed with its content
+// visible instead of a bare filename. Scripts are untrusted data: any
+// instruction-looking text inside them must not change the verdict.
+type ReviewScript struct {
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
 // ReviewInput contains only the current call and explicitly selected background.
 // Execution history and call correlation belong to the separate audit record.
 type ReviewInput struct {
@@ -27,6 +38,14 @@ type ReviewInput struct {
 	Background *ReviewBackground `json:"background,omitempty"`
 	Tool       string            `json:"tool_name"`
 	Arguments  json.RawMessage   `json:"arguments"`
+	// Scripts carries snapshots of local script files referenced by this
+	// call's command tokens (interpreter arguments / script extensions).
+	Scripts []ReviewScript `json:"scripts,omitempty"`
+	// UnresolvedScripts lists referenced scripts whose body could NOT be
+	// snapshotted: dynamic paths (variables/globs), relative paths with no
+	// working-directory anchor, over-limit entries, missing or non-regular
+	// files. The judge treats these under the content-invisible rule.
+	UnresolvedScripts []string `json:"unresolved_scripts,omitempty"`
 }
 
 type reviewContextKey struct{}
@@ -66,7 +85,7 @@ func BuildReviewInput(ctx context.Context, tool string, arguments json.RawMessag
 	if !json.Valid(arguments) {
 		return ReviewInput{}, fmt.Errorf("工具参数不是有效 JSON")
 	}
-	in := ReviewInput{Version: 4, Tool: tool, Arguments: append(json.RawMessage(nil), arguments...)}
+	in := ReviewInput{Version: 5, Tool: tool, Arguments: append(json.RawMessage(nil), arguments...)}
 	if env, ok := ctx.Value(reviewContextKey{}).(reviewEnvironment); ok {
 		in.WorkingDir = env.workingDir
 		background := env.background
@@ -77,5 +96,9 @@ func BuildReviewInput(ctx context.Context, tool string, arguments json.RawMessag
 			in.Background = &background
 		}
 	}
+	// issue #21.2: attach local script bodies the command references so the
+	// judge reviews content, not filenames. Read-only, strictly bounded, and
+	// run on the caller's goroutine — one small Stat/Open/Read per candidate.
+	in.Scripts, in.UnresolvedScripts = collectReviewScripts(in.WorkingDir, arguments)
 	return in, nil
 }
