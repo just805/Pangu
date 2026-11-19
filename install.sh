@@ -448,6 +448,12 @@ choose_mode(){
 # 行为与不问时完全一致）。域名形态走「反代 TLS」：会预置
 # PANGU_COOKIE_SECURE=1 / PANGU_TRUSTED_PROXIES=127.0.0.1（反代不在本机时改成
 # 其网段），安装摘要按域名打印访问入口与核对清单。
+choose_mode
+# ── 询问访问形态（域名 vs IP）────────────────────────
+# 只在交互模式且未用 --domain 显式指定时问。留空 = 按 IP:端口 直连（默认形态，
+# 行为与不问时完全一致）。域名形态走「反代 TLS」：会预置
+# PANGU_COOKIE_SECURE=1 / PANGU_TRUSTED_PROXIES=127.0.0.1（反代不在本机时改成
+# 其网段），安装摘要按域名打印访问入口与核对清单。
 ask_domain(){
   [ -n "$DOMAIN" ] && return 0          # --domain 已显式指定，不再问
   [ "$ASSUME_YES" = "1" ] && return 0   # 非交互模式
@@ -459,6 +465,20 @@ ask_domain(){
   read -r -t 90 ans </dev/tty || ans=""
   ans="$(printf '%s' "$ans" | tr -d ' \t"'"'"'')"
   [ -z "$ans" ] && { info "按 IP:端口 直连形态安装（要改域名形态可重跑 install.sh --domain=NAME，幂等）"; return 0; }
+  # 归一化：用户常把完整 URL 粘进来（http://xxx/）——剥 scheme 与路径，只留主机名。
+  ans="${ans#*://}"
+  ans="${ans%%/*}"
+  # 粘的是 IP 或 IP:端口：那是「IP 直连」形态的意图，域名形态（反代 TLS/cookie
+  # Secure）对 IP 无意义，按 IP 直连继续。
+  if printf '%s' "$ans" | grep -Eq '^[0-9]+(\.[0-9]+){3}(:[0-9]+)?$'; then
+    info "输入是 IP 地址，按 IP:端口 直连形态安装"
+    return 0
+  fi
+  if ! printf '%s' "$ans" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'; then
+    warn "域名格式不合法: $ans（只认主机名，如 pangu.example.com；中文域名请先用 punycode）——按 IP 直连继续"
+    info "按 IP:端口 直连形态安装（要改域名形态可重跑 install.sh --domain=NAME，幂等）"
+    return 0
+  fi
   DOMAIN="$ans"
   ok "域名部署形态: $DOMAIN（将预置 PANGU_COOKIE_SECURE=1 / PANGU_TRUSTED_PROXIES=127.0.0.1）"
 }
