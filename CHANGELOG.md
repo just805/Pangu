@@ -21,6 +21,10 @@
 - **升级不再沿用旧镜像 tag**：`PANGU_TAG`/`PANGU_IMAGE` 只在首次生成 .env 时写入，
   重跑 install.sh 升级后 compose 仍拉旧版本镜像——升级形同虚设。现在每次安装都
   同步为本次目标版本。
+- **macos-install-smoke 冒烟版本修正**：workflow 此前钉死原作者仓库的
+  `v0.4.66`——本仓库无此 Release，darwin 包下载必 404，冒烟自 v0.1.1 起恒挂
+  （44s 快速失败，与 install.sh 改动无关）。改为动态冒烟本仓库最新正式版，
+  workflow_dispatch 可指定旧版复现。
 
 ## [0.1.4] - 2026-11-19
 

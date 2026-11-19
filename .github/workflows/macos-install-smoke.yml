@@ -16,6 +16,11 @@ name: macos-install-smoke
 
 on:
   workflow_dispatch:
+    inputs:
+      smoke_version:
+        description: '冒烟的 Release tag（留空 = 最新正式版）'
+        required: false
+        default: ''
   push:
     branches: [main]
     paths:
@@ -27,11 +32,29 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     env:
-      # 冒烟钉一个明确的已发布版本，避免 latest 变动导致不可复现；
-      # 版本里有 darwin 包自 v0.4.66 起。
-      PANGU_SMOKE_VERSION: v0.4.66
+      # 冒烟版本：留空 = 动态取本仓库最新正式版（下一步解析）。此前钉死
+      # v0.4.66 是原作者仓库的 tag——本仓库没有这个 Release，下载 darwin 包
+      # 必然 404，install.sh 一步 44s 即败（v0.1.1 起三次冒烟全挂即此因）。
+      # 需要复现旧版时用 workflow_dispatch 的 smoke_version 输入指定。
+      PANGU_SMOKE_VERSION: ""
     steps:
       - uses: actions/checkout@v5
+
+      - name: Resolve smoke version
+        run: |
+          if [ -n "$PANGU_SMOKE_VERSION" ]; then
+            echo "smoke version (pinned): $PANGU_SMOKE_VERSION"
+            exit 0
+          fi
+          if [ -n "${{ github.event.inputs.smoke_version }}" ]; then
+            echo "PANGU_SMOKE_VERSION=${{ github.event.inputs.smoke_version }}" >> "$GITHUB_ENV"
+            echo "smoke version (input): ${{ github.event.inputs.smoke_version }}"
+            exit 0
+          fi
+          TAG="$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)"
+          [ -n "$TAG" ] || { echo "无法解析最新 Release tag"; exit 1; }
+          echo "PANGU_SMOKE_VERSION=$TAG" >> "$GITHUB_ENV"
+          echo "smoke version (latest): $TAG"
 
       - name: Pre-flight
         run: |
