@@ -2,6 +2,24 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.9] - 2026-11-19
+
+### 新增（域名部署开箱即用）
+
+- **域名形态自动 Caddy 反代（默认）**：交互选域名后三选一反代方案——
+  1) **自动安装并配置 Caddy**（推荐）：同机反向代理自动 HTTPS，装完即可用
+     `https://域名` 访问，零手工操作（Caddyfile 幂等追加不毁已有配置；
+     apt/dnf 装；DNS 解析就绪后自动签发 TLS 证书）；macOS 自动降级为方案 2
+  2) 已有自己的反代：Pangu 只做端口收口（绑 127.0.0.1）与受信代理配置
+     （同机/不同机追问，写对 TRUSTED_PROXIES）
+  3) 暂不配反代：先用 `http://IP:8787` 访问（cookie Secure 临时关），配好
+     反代后改回 1 重启即可
+  CLI 新增 `--reverse-proxy=caddy|existing|none`。cookie Secure 跟随方案自动
+  定值，不再出现「选了域名却无法直接访问」的死锁。
+- **install.env 状态沿用补全**：反代方案也持久化，升级重跑不漂移。
+- **Linux 交互冒烟断言扩展**：域名归一化 → 自动 Caddy 配置 → systemd 单元
+  域名变量 → Caddyfile 域名块 → 幂等重跑，全链路 CI 守护。
+
 ## [0.1.8] - 2026-11-19
 
 ### 新增（部署链路整体收口）

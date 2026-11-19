@@ -70,6 +70,7 @@ PANGU 安装脚本
   --proxy=ADDR           流量记录代理地址（默认 127.0.0.1:8788）
   --domain=NAME          域名部署（如 pangu.example.com）：预置 HTTPS 相关环境变量并按域名打印访问入口；不填 = 按 IP:端口 访问（交互安装时也会询问，留空 = IP 直连）
   --trusted-proxy=IP     域名形态下反代所在 IP（默认 127.0.0.1，即反代同机；不同机填反代 IP，登录防爆破才按真实客户端计数）
+  --reverse-proxy=MODE   域名形态反代方案：caddy（自动安装配置，推荐）/ existing（自备反代）/ none（暂不配，先 IP 访问）。交互安装会询问，默认 caddy
   --install-proxy=URL    安装期出网代理，如 http://10.0.0.14:7897（默认取 \$HTTPS_PROXY）
   -y, --yes              非交互，全部用默认值
   -h, --help             显示帮助
@@ -101,6 +102,7 @@ for arg in "$@"; do
     --install-proxy=*) INSTALL_PROXY="${arg#--install-proxy=}" ;;
     --domain=*)        CLI_DOMAIN="${arg#--domain=}" ;;          # 先存 CLI 值，install.env 加载后再合并（CLI 优先）
     --trusted-proxy=*) CLI_TRUSTED_PROXY="${arg#--trusted-proxy=}" ;;
+    --reverse-proxy=*) CLI_PROXY_MODE="${arg#--reverse-proxy=}" ;;
     --user=*)          RUN_USER="${arg#--user=}" ;;
     --pg-super=*)      PG_SUPER="${arg#--pg-super=}" ;;
     --image=*)         IMAGE="${arg#--image=}" ;;
@@ -132,6 +134,19 @@ fi
 if [ -n "${CLI_TRUSTED_PROXY:-}" ]; then
   TRUSTED_PROXY="$CLI_TRUSTED_PROXY"
 fi
+# 反代方案合并：状态文件沿用 → CLI 显式覆盖 → 域名形态缺省 existing（旧版语义）。
+if [ -n "${CLI_PROXY_MODE:-}" ]; then
+  case "$CLI_PROXY_MODE" in
+    caddy|existing|none) PROXY_MODE="$CLI_PROXY_MODE" ;;
+    *) die "--reverse-proxy 只能是 caddy / existing / none" ;;
+  esac
+elif [ -z "$PROXY_MODE" ] && [ -n "$DOMAIN" ]; then
+  PROXY_MODE="existing"
+fi
+case "$PROXY_MODE" in
+  caddy|existing) COOKIE_SECURE_VAL="1" ;;
+  none)           COOKIE_SECURE_VAL="0" ;;
+esac
 
 # ── 前置检查 ─────────────────────────────────────
 DIR_EXPLICIT="${DIR_EXPLICIT:-0}"
@@ -440,11 +455,14 @@ fi
 #     其它机器时由交互追问（或 --trusted-proxy=）写入反代 IP——否则登录防
 #     爆破按反代 IP 计数，所有用户会被一起锁。
 TRUSTED_PROXY="${TRUSTED_PROXY:-127.0.0.1}"
+# 域名形态的反代方案：caddy（脚本自动装并配置，推荐）/ existing（用户自备）/
+# none（暂不配，先用 IP:8787 访问）。cookie Secure 跟随方案：caddy/existing=1，
+# none=0（配好反代后再开）。
+PROXY_MODE=""
+COOKIE_SECURE_VAL="0"
+# DOMAIN_ENV（binary systemd 的域名形态环境变量）延迟到 ask_domain 之后组装——
+# cookie Secure/受信代理的最终值要等反代方案选定（此前在此处组装会拿到初值）。
 DOMAIN_ENV=""
-if [ -n "$DOMAIN" ]; then
-  DOMAIN_ENV="Environment=PANGU_COOKIE_SECURE=1
-Environment=PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY"
-fi
 
 # ── 选择部署形态 ─────────────────────────────────
 choose_mode(){
@@ -506,27 +524,51 @@ ask_domain(){
     return 0
   fi
   DOMAIN="$ans"
-  ok "域名部署形态: $DOMAIN（将预置 PANGU_COOKIE_SECURE=1 / PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY）"
-  # 反代位置追问：TRUSTED_PROXIES 错了会导致登录防爆破按反代 IP 计数——所有
-  # 用户共享一个计数器，一人输错密码全员被锁。这里直接问清，写对值。
-  printf '反向代理与 Pangu 同机吗？(Y/n，同机 = 默认 127.0.0.1) '
-  local rp=""
-  read -r -t 60 rp </dev/tty || rp=""
-  case "$(printf '%s' "$rp" | tr -d ' \t' | tr 'A-Z' 'a-z')" in
-    n|no)
-      printf '反代所在机器 IP（如 10.0.0.9，回车 = 保持 127.0.0.1 装完手改 .env）: '
-      local rip=""
-      read -r -t 60 rip </dev/tty || rip=""
-      rip="$(printf '%s' "$rip" | tr -d ' \t')"
-      if printf '%s' "$rip" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'; then
-        TRUSTED_PROXY="$rip"
-        ok "PANGU_TRUSTED_PROXIES 将设为 $rip"
-      else
-        warn "IP 不合法，保持 127.0.0.1（装完在 .env 里改 PANGU_TRUSTED_PROXIES）"
-      fi
+  # 反代方案三选一：默认自动 Caddy——「支持域名部署」的口径是装完即可用
+  # https://域名 访问，而不是把配反代甩给用户。
+  printf '\n域名反代方案：\n'
+  printf '  1) 自动安装并配置 Caddy（推荐：同机反向代理自动 HTTPS，装完即可用域名访问）\n'
+  printf '  2) 已有自己的反向代理（Pangu 只做端口收口与受信代理配置）\n'
+  printf '  3) 暂不配反代（先用 http://IP:%s 访问，配好反代后再开 cookie Secure）\n' "${LISTEN_ADDR##*:}"
+  printf '选择 [1]: '
+  local pick=""
+  read -r -t 60 pick </dev/tty || pick=""
+  case "$(printf '%s' "$pick" | tr -d ' \t')" in
+    2|existing)
+      PROXY_MODE="existing"
+      COOKIE_SECURE_VAL="1"
+      # TRUSTED_PROXIES 错了会导致登录防爆破按反代 IP 计数——所有用户共享一个
+      # 计数器，一人输错密码全员被锁。这里直接问清，写对值。
+      printf '反向代理与 Pangu 同机吗？(Y/n，同机 = 默认 127.0.0.1) '
+      local rp=""
+      read -r -t 60 rp </dev/tty || rp=""
+      case "$(printf '%s' "$rp" | tr -d ' \t' | tr 'A-Z' 'a-z')" in
+        n|no)
+          printf '反代所在机器 IP（如 10.0.0.9，回车 = 保持 127.0.0.1 装完手改 .env）: '
+          local rip=""
+          read -r -t 60 rip </dev/tty || rip=""
+          rip="$(printf '%s' "$rip" | tr -d ' \t')"
+          if printf '%s' "$rip" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'; then
+            TRUSTED_PROXY="$rip"
+            ok "PANGU_TRUSTED_PROXIES 将设为 $rip"
+          else
+            warn "IP 不合法，保持 127.0.0.1（装完在 .env 里改 PANGU_TRUSTED_PROXIES）"
+          fi
+          ;;
+        *) : ;;  # 同机（默认）
+      esac
       ;;
-    *) : ;;  # 同机（默认）
+    3|none)
+      PROXY_MODE="none"
+      COOKIE_SECURE_VAL="0"
+      warn "暂不配反代：装完先用 http://IP:8787 访问（cookie Secure 已临时关）；配好反代后把 PANGU_COOKIE_SECURE 改 1 并重启服务"
+      ;;
+    *)
+      PROXY_MODE="caddy"
+      COOKIE_SECURE_VAL="1"
+      ;;
   esac
+  ok "域名部署形态: $DOMAIN（反代: $PROXY_MODE，cookie Secure=$COOKIE_SECURE_VAL，TRUSTED_PROXIES=$TRUSTED_PROXY）"
 }
 ask_domain
 # 形态决策落盘（重跑沿用；显式 CLI 参数已覆盖，这里写最终值）
@@ -534,7 +576,13 @@ mkdir -p "$INSTALL_DIR"
 {
   printf 'DOMAIN=%s\n' "$DOMAIN"
   printf 'TRUSTED_PROXY=%s\n' "$TRUSTED_PROXY"
+  printf 'PROXY_MODE=%s\n' "$PROXY_MODE"
 } > "$INSTALL_STATE"
+# DOMAIN_ENV 组装（deploy_binary 用）：此时反代方案/受信代理已是最终值。
+if [ -n "$DOMAIN" ]; then
+  DOMAIN_ENV="Environment=PANGU_COOKIE_SECURE=$COOKIE_SECURE_VAL
+Environment=PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY"
+fi
 ok "部署形态: $MODE  目标目录: $INSTALL_DIR"
 
 # ── 解析版本 ─────────────────────────────────────
@@ -1102,15 +1150,15 @@ ENV
   # 幂等：升级重跑不重复追加、已有值不覆盖。TRUSTED_PROXY 来自交互追问或
   # --trusted-proxy=（默认 127.0.0.1 = 反代同机）。
   if [ -n "$DOMAIN" ] && ! grep -q '^PANGU_COOKIE_SECURE=' "$INSTALL_DIR/.env"; then
-    printf 'PANGU_COOKIE_SECURE=1\nPANGU_TRUSTED_PROXIES=%s\n' "$TRUSTED_PROXY" >> "$INSTALL_DIR/.env"
-    ok "已按域名部署预置 PANGU_COOKIE_SECURE=1 / PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY"
+    printf 'PANGU_COOKIE_SECURE=%s\nPANGU_TRUSTED_PROXIES=%s\n' "$COOKIE_SECURE_VAL" "$TRUSTED_PROXY" >> "$INSTALL_DIR/.env"
+    ok "已按域名部署预置 PANGU_COOKIE_SECURE=$COOKIE_SECURE_VAL / PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY（反代方案: $PROXY_MODE）"
   fi
 
   local PORT="${LISTEN_ADDR##*:}" PROXY_PORT="${PROXY_ADDR##*:}"
-  # 域名形态 UI 只经反代访问：宿主端口绑 127.0.0.1，8787 不裸奔公网（IP 形态
-  # 才直接对外，UI_BIND 为空 = 绑全部网卡）。
+  # 域名形态且反代方案为 caddy/existing：宿主端口绑 127.0.0.1（UI 只经反代
+  # 访问，8787 不裸奔公网）；none = UI 直接对外（反代就绪前的过渡形态）。
   local UI_BIND=""
-  if [ -n "$DOMAIN" ]; then
+  if [ -n "$DOMAIN" ] && [ "$PROXY_MODE" != "none" ]; then
     UI_BIND="127.0.0.1:"
   fi
   cat > "$INSTALL_DIR/docker-compose.yml" <<COMPOSE
@@ -1171,6 +1219,43 @@ COMPOSE
   ( cd "$INSTALL_DIR" && docker compose pull )
   ( cd "$INSTALL_DIR" && docker compose up -d )
   ok "容器已启动"
+}
+
+# ── 域名反代：自动安装并配置 Caddy（PROXY_MODE=caddy，两种形态通用）──
+# 「支持域名部署」的口径：装完即可用 https://域名 访问。Caddy 同机反代到
+# 127.0.0.1:PORT，DNS 解析就绪后自动签发 TLS 证书。Caddyfile 只追加不覆盖
+# （幂等：已有该域名块时跳过，不毁用户其它站点配置）。
+install_caddy(){
+  local PORT="${LISTEN_ADDR##*:}"
+  if [ "$IS_MAC" = "1" ]; then
+    # macOS 走 launchd 体系，无 systemctl：自动 Caddy 仅支持 apt/dnf 形态。
+    warn "macOS 暂不支持自动 Caddy，已按「自备反代」处理：请自行把 ${DOMAIN} 反代到 http://127.0.0.1:${PORT}（brew install caddy 也可），并保持 PANGU_COOKIE_SECURE=1"
+    PROXY_MODE="existing"
+    return 0
+  fi
+  if ! command -v caddy >/dev/null 2>&1; then
+    info "安装 Caddy（反向代理，自动 HTTPS）..."
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get install -y caddy >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y caddy; } || die "Caddy 安装失败（apt 源不可用？可用 --install-proxy 指定代理，或重跑选方案 2 自备反代）"
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y caddy || die "Caddy 安装失败（dnf 源不可用？）"
+    else
+      die "未识别的包管理器，请手动安装 Caddy 后重跑（或选 --reverse-proxy=existing 自备反代）"
+    fi
+  else
+    ok "Caddy 已安装，直接配置"
+  fi
+  local CF="/etc/caddy/Caddyfile"
+  [ -f "$CF" ] || printf '' > "$CF"
+  if ! grep -q "^${DOMAIN} {" "$CF"; then
+    printf '\n%s {\n    reverse_proxy 127.0.0.1:%s\n}\n' "$DOMAIN" "$PORT" >> "$CF"
+    ok "已写入 Caddyfile：$DOMAIN → 127.0.0.1:$PORT"
+  else
+    ok "Caddyfile 已含 $DOMAIN 配置，跳过追加"
+  fi
+  systemctl enable caddy >/dev/null 2>&1 || true
+  systemctl restart caddy || die "Caddy 启动失败（journalctl -u caddy 查看；80/443 被占用？）"
+  ok "Caddy 已配置：https://$DOMAIN（DNS 解析就绪后自动签发 TLS 证书，无需手工操作）"
 }
 
 # ── --with-tools：宿主渗透工具 ───────────────────
@@ -1558,6 +1643,10 @@ if [ "$MODE" = "docker" ] && [ -f "$INSTALL_DIR/.env" ]; then
   _ui_port="$(grep -E '^PANGU_UI_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2)"
   [ -n "$_ui_port" ] && PORT="$_ui_port"
 fi
+# ── 域名反代（PROXY_MODE=caddy）：服务起来后自动装并配置 ──
+if [ -n "$DOMAIN" ] && [ "$PROXY_MODE" = "caddy" ]; then
+  install_caddy
+fi
 for _n in $(seq 1 30); do
   # 每轮失败打进度：装机现场「卡在哪一步」必须可见，也方便排障
   # curl 的退出码显式捕获：set -e 下 if 条件本应豁免，但显式 rc 让「为什么退出」
@@ -1570,10 +1659,21 @@ for _n in $(seq 1 30); do
     # set -e 当场杀掉脚本——曾让 macOS 安装在 health 200 后静默退出
     HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
     if [ -n "$DOMAIN" ]; then
-      # 域名部署：访问入口走反代，摘要给出反代指向与安全变量核对项。
-      ok "服务已就绪 → 域名入口 https://${DOMAIN}（反代指向 http://127.0.0.1:${PORT}，TLS 就绪后即为 HTTPS）"
-      warn "域名形态：反代（nginx/caddy + TLS）就绪前【不要】用 http://IP:${PORT} 登录——cookie 带 Secure 标记，纯 HTTP 下浏览器拒收，表现为登录后立刻弹回登录页。先用 IP 访问需临时把 .env 的 PANGU_COOKIE_SECURE 改 0 后 docker compose up -d / systemctl restart pangu"
-      info "域名部署核对：①DNS 已把 ${DOMAIN} 解析到本机；②反代指向 http://127.0.0.1:${PORT}（域名形态 UI 已只绑 127.0.0.1，不直接对外）；③PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY（反代不在本机时改成其 IP/网段，否则登录防爆破按反代 IP 计）；④建议再设 PANGU_HSTS_MAX_AGE=31536000；⑤首次访问 https://${DOMAIN} 设置管理员密码（公网部署建议先设 PANGU_INIT_TOKEN）"
+      # 域名部署：按反代方案分支打印访问入口与核对项。
+      case "$PROXY_MODE" in
+        caddy)
+          ok "服务已就绪 → https://${DOMAIN}（Caddy 反代已配置：DNS 解析就绪后自动签发 TLS 证书，无需手工操作）"
+          info "域名部署核对：①DNS 已把 ${DOMAIN} 解析到本机；②cookie Secure 已按 HTTPS 形态开启（勿用 http://IP:${PORT} 登录）；③公网部署建议先设 PANGU_INIT_TOKEN"
+          ;;
+        existing)
+          ok "服务已就绪 → 域名入口 https://${DOMAIN}（自备反代指向 http://127.0.0.1:${PORT}，TLS 就绪后即为 HTTPS）"
+          info "域名部署核对：①DNS 已把 ${DOMAIN} 解析到本机；②cookie Secure 已开启（反代 TLS 就绪前勿用 http://IP:${PORT} 登录）；③PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY（反代不在本机时改成其 IP/网段）；④建议再设 PANGU_HSTS_MAX_AGE=31536000"
+          ;;
+        *)
+          ok "服务已就绪 → http://${HOST_IP:-127.0.0.1}:${PORT}（暂未配反代：cookie Secure 已临时关，配好后把 PANGU_COOKIE_SECURE 改 1 并重启服务，即可用 https://${DOMAIN}）"
+          info "域名后续核对：①DNS 把 ${DOMAIN} 解析到本机；②反代指向 http://127.0.0.1:${PORT}；③PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY"
+          ;;
+      esac
     else
       ok "服务已就绪 → http://${HOST_IP:-127.0.0.1}:${PORT}（首次访问设置管理员密码）"
     fi
