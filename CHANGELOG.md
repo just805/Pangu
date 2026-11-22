@@ -2,6 +2,35 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.12] - 2026-11-23
+
+### 新增（客户端/二进制逆向 P0-P0c）
+
+- **P0 静态 triage**：任务详情新增「逆向分析」页，支持上传 exe/dll/elf/apk/jar/asar
+  （单样本 ≤256MB）；解析 PE/ELF 头、节区熵、导入表、签名、.NET/加壳识别，
+  提取 URL/域名/高价值字符串并用规则库扫描硬编码凭据。样本只读、绝不执行，
+  按任务目录隔离存储，随任务删除/归档一起清理；同任务同 SHA-256 只保留一份。
+- **P0b 源码反编译**：`.NET → ilspycmd`、`Electron → @electron/asar`、
+  `APK/JAR → jadx`；前端提供产物文件树与在线源码查看（单文件 ≤1MB），
+  反编译文本再做一次秘密扫描（`source=decompile`，与二进制扫描结果互不覆盖）。
+  「宿主环境」页新增「客户端逆向」分类及工具的安装/检测指引。
+- **P0c 原生 PE 伪代码**：接入 Ghidra headless（`analyzeHeadless`），内嵌
+  `DecompileAll.java` 逐函数导出 C 伪代码（上限 500 个函数、单函数 60 秒）；
+  由于 Ghidra 启动与自动分析较慢，改为异步任务——接口立即返回 `202 running`，
+  前端轮询状态，结束后落库并自动刷新；临时工程与脚本执行完即删除。
+  Ghidra 未安装时返回 409 与安装指引，不影响 triage/字符串/秘密扫描。
+- **报告**：Word 与 Markdown 同源新增「五、客户端/二进制分析」章，展示样本
+  triage 摘要、反编译状态及来源标注的敏感信息候选；修复优先级路线图顺延为第六章。
+- **文档**：新增《Ghidra 安装指南》，覆盖版本/JDK 对照、Linux 与 systemd 接入、
+  Docker 派生镜像、Windows 开发机与常见排障。
+
+### 验证
+
+- `go build ./...`、`go vet ./server/ ./db/ ./hosttools/`；
+- `go test ./server/ -run "Test.*Decompile|TestGhidra|TestIsTextSource"`、
+  `go test ./reverse/ ./report/ -count=1`；
+- 前端 `npx tsc --noEmit`、`NEXT_EXPORT=1 npx next build`（36 个路由静态导出）。
+
 ## [0.1.11] - 2026-11-22
 
 ### 新增（攻击链叙事与可视化 C1-C4）
