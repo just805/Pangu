@@ -1217,6 +1217,50 @@ CREATE TABLE IF NOT EXISTS finding_chain_edges (
 );
 CREATE INDEX IF NOT EXISTS idx_fchain_exp ON finding_chain_edges(exploration_id);
 
+-- 客户端/二进制逆向样本（P0）。样本只做静态分析，绝不执行；storage_path 是
+-- 服务端数据目录内的相对路径，不对外暴露。同任务同 SHA-256 只保留一份。
+CREATE TABLE IF NOT EXISTS reverse_samples (
+    id           BIGSERIAL PRIMARY KEY,
+    task_id      BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    filename     TEXT NOT NULL,
+    sha256       TEXT NOT NULL,
+    size_bytes   BIGINT NOT NULL DEFAULT 0,
+    kind         TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'uploaded', -- uploaded | analyzed | failed
+    metadata     JSONB NOT NULL DEFAULT '{}',
+    error        TEXT NOT NULL DEFAULT '',
+    storage_path TEXT NOT NULL DEFAULT '',
+    decompile_engine TEXT NOT NULL DEFAULT '',
+    decompile_status TEXT NOT NULL DEFAULT '',
+    decompile_dir    TEXT NOT NULL DEFAULT '',
+    decompile_error  TEXT NOT NULL DEFAULT '',
+    decompiled_at    TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    analyzed_at  TIMESTAMPTZ
+);
+ALTER TABLE reverse_samples ADD COLUMN IF NOT EXISTS decompile_engine TEXT NOT NULL DEFAULT '';
+ALTER TABLE reverse_samples ADD COLUMN IF NOT EXISTS decompile_status TEXT NOT NULL DEFAULT '';
+ALTER TABLE reverse_samples ADD COLUMN IF NOT EXISTS decompile_dir    TEXT NOT NULL DEFAULT '';
+ALTER TABLE reverse_samples ADD COLUMN IF NOT EXISTS decompile_error  TEXT NOT NULL DEFAULT '';
+ALTER TABLE reverse_samples ADD COLUMN IF NOT EXISTS decompiled_at    TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_reverse_samples_task_sha ON reverse_samples(task_id, sha256);
+CREATE INDEX IF NOT EXISTS idx_reverse_samples_task ON reverse_samples(task_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS reverse_secrets (
+    id         BIGSERIAL PRIMARY KEY,
+    sample_id  BIGINT NOT NULL REFERENCES reverse_samples(id) ON DELETE CASCADE,
+    rule       TEXT NOT NULL,
+    match      TEXT NOT NULL,
+    context    TEXT NOT NULL DEFAULT '',
+    offset_bytes BIGINT NOT NULL DEFAULT 0,
+    section    TEXT NOT NULL DEFAULT '',
+    source     TEXT NOT NULL DEFAULT 'binary', -- binary | decompile
+    confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE reverse_secrets ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'binary';
+CREATE INDEX IF NOT EXISTS idx_reverse_secrets_sample ON reverse_secrets(sample_id, confidence DESC, id);
+
 -- 手动复测属于独立会话；结论与原漏洞处置状态分开保存。
 CREATE TABLE IF NOT EXISTS finding_retests (
     id BIGSERIAL PRIMARY KEY,

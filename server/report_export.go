@@ -130,6 +130,13 @@ func (s *Server) assembleTaskReport(ctx context.Context, t *Task) (report.TaskDo
 	execSummary, _, _ := s.m.pg.GetSetting(execSummaryKey(t.ID))
 	// 攻击路径（C2/C3）：与任务详情「攻击链」页同源；失败时留空，报告仍保留章节。
 	chain, _ := t.Store.AttackChain()
+	// 客户端/二进制分析（P0）：样本与秘密候选，静态读取，不执行样本。
+	reverseSamples, _ := s.m.pg.ListReverseSamples(reverseTaskID(t))
+	reverseSecrets := map[int64][]db.ReverseSecret{}
+	for _, sample := range reverseSamples {
+		secs, _ := s.m.pg.ListReverseSecrets(sample.ID)
+		reverseSecrets[sample.ID] = secs
+	}
 	return report.TaskDocxInput{
 		Title:          fmt.Sprintf("渗透测试报告 — %s", t.Description),
 		Goal:           t.Goal,
@@ -147,6 +154,8 @@ func (s *Server) assembleTaskReport(ctx context.Context, t *Task) (report.TaskDo
 		ExecSummary:    execSummary,
 		CVEInfo:        s.cveIntelFor(ctx, findings),
 		AttackChain:    chain,
+		ReverseSamples: reverseSamples,
+		ReverseSecrets: reverseSecrets,
 	}, nil
 }
 

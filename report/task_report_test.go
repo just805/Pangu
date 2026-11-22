@@ -53,7 +53,7 @@ func TestTaskMarkdownIncludesExecSummaryAndEnrichment(t *testing.T) {
 	if !strings.Contains(md, "admin/admin 登录成功") || !strings.Contains(md, "弱口令登录后台") {
 		t.Fatalf("漏洞明细缺失: %s", head(md))
 	}
-	if !strings.Contains(md, "五、修复优先级路线图") || !strings.Contains(md, "立即整改") {
+	if !strings.Contains(md, "六、修复优先级路线图") || !strings.Contains(md, "立即整改") {
 		t.Fatalf("路线图缺失: %s", head(md))
 	}
 }

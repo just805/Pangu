@@ -54,6 +54,10 @@ import type {
   InstallBatchResult,
   InstallJob,
   Insights,
+  ReverseDecompiled,
+  ReverseDecompileResult,
+  ReverseSample,
+  ReverseSampleDetail,
   ProxyCheckResult,
   IntentAsset,
   InterceptApprovalFilter,
@@ -810,6 +814,61 @@ export const api = {
   // 跨任务洞察（C4）：按天/企业聚合任务、严重度与 token 成本。
   insights: (days = 30, company?: number) =>
     get<Insights>(`/insights?days=${days}${company ? `&company=${company}` : ""}`),
+  // 客户端/二进制逆向（P0）：样本上传、静态 triage 与敏感信息候选。
+  reverseSamples: (taskId: string) =>
+    get<{ samples: ReverseSample[] }>(`/tasks/${encodeURIComponent(taskId)}/reverse/samples`).then((r) =>
+      arr(r.samples),
+    ),
+  reverseSample: (taskId: string, sampleId: number) =>
+    get<ReverseSampleDetail>(`/tasks/${encodeURIComponent(taskId)}/reverse/samples/${sampleId}`),
+  reverseUpload: async (taskId: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const token = getToken();
+    const r = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/reverse/samples`, {
+      method: "POST",
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: fd,
+    });
+    if (!r.ok) throw new Error(`上传失败: ${r.status} ${await r.text()}`);
+    return r.json() as Promise<ReverseSampleDetail>;
+  },
+  reverseAnalyze: (taskId: string, sampleId: number) =>
+    post<ReverseSampleDetail>(`/tasks/${encodeURIComponent(taskId)}/reverse/samples/${sampleId}/analyze`, {}),
+  reverseDelete: (taskId: string, sampleId: number) =>
+    del<{ deleted: boolean; id: number }>(
+      `/tasks/${encodeURIComponent(taskId)}/reverse/samples/${sampleId}`,
+    ),
+  reverseDownloadUrl: (taskId: string, sampleId: number) =>
+    `/api/tasks/${encodeURIComponent(taskId)}/reverse/samples/${sampleId}/download`,
+  reverseDecompile: async (taskId: string, sampleId: number, engine = "auto") => {
+    const token = getToken();
+    const r = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/reverse/samples/${sampleId}/decompile`, {
+      method: "POST",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ engine }),
+    });
+    const data = (await r.json().catch(() => ({}))) as ReverseDecompileResult & { error?: string; install?: string };
+    if (!r.ok) {
+      const msg = [data.error, data.install].filter(Boolean).join("；");
+      throw new Error(msg || `反编译失败: ${r.status}`);
+    }
+    return data;
+  },
+  reverseDecompiled: (taskId: string, sampleId: number) =>
+    get<ReverseDecompiled>(`/tasks/${encodeURIComponent(taskId)}/reverse/samples/${sampleId}/decompiled`),
+  reverseDecompiledFile: async (taskId: string, sampleId: number, path: string) => {
+    const token = getToken();
+    const r = await fetch(
+      `/api/tasks/${encodeURIComponent(taskId)}/reverse/samples/${sampleId}/decompiled/file?path=${encodeURIComponent(path)}`,
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+    );
+    if (!r.ok) throw new Error(`读取失败: ${r.status} ${await r.text()}`);
+    return r.text();
+  },
   // 播报板:服务端按创建顺序分页的探索节点(默认最新在前)。
   explorationNodes: (task: string, query: ExplorationNodeQuery = {}) => {
     const q = new URLSearchParams();

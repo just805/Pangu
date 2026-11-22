@@ -47,9 +47,9 @@ func TestAttackChainMarkdownSection(t *testing.T) {
 			t.Fatalf("markdown missing %q\n%s", want, md)
 		}
 	}
-	// 章节顺延：修复路线图必须是第五章。
-	if !strings.Contains(md, "## 五、修复优先级路线图") {
-		t.Fatal("remediation chapter should be renumbered to 五")
+	// 章节顺延：修复路线图必须是第六章。
+	if !strings.Contains(md, "## 六、修复优先级路线图") {
+		t.Fatal("remediation chapter should be renumbered to 六")
 	}
 }
 

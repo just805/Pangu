@@ -51,6 +51,10 @@ type TaskDocxInput struct {
 	// AttackChain 攻击路径（C2）：finding 血缘投影的链路叙事。nil = 报告仍保留
 	// 「攻击路径」章并说明未形成链路，避免读者误以为漏章。
 	AttackChain *db.AttackChain
+	// ReverseSamples 客户端/二进制静态分析样本（P0）；ReverseSecrets 按样本 id
+	// 索引敏感信息候选。nil/空 = 报告仍保留章节并说明未上传样本。
+	ReverseSamples []*db.ReverseSample
+	ReverseSecrets map[int64][]db.ReverseSecret
 }
 
 func sevRankKey(f *db.DBFinding) int {
@@ -266,8 +270,13 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 	writeAttackChainDocx(d, in.AttackChain, in.AssetNames)
 	d.PageBreak()
 
-	// ── 五、修复优先级路线图（A15：立即/计划/择机三档）──
-	d.H1("五、修复优先级路线图")
+	// ── 五、客户端/二进制分析（P0：静态 triage + 秘密扫描）──
+	d.H1("五、客户端/二进制分析")
+	writeReverseChapterDocx(d, in.ReverseSamples, in.ReverseSecrets)
+	d.PageBreak()
+
+	// ── 六、修复优先级路线图（A15：立即/计划/择机三档）──
+	d.H1("六、修复优先级路线图")
 	writeRemediationRoadmap(d, in.Findings)
 
 	// ── 附录 A：资产清单（A16）──

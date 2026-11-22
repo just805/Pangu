@@ -51,6 +51,7 @@ const (
 	// CatMobile 移动端逆向（v0.6）：APK 解包/反编译/重打包/动态 Hook。
 	// 黑灰产分发常只给一个 APK/安装包，Web 之外的这一面必须能自己拆。
 	CatMobile   Category = "mobile"   // 移动端逆向（APK/Android）
+	CatReverse  Category = "reverse"  // 客户端/桌面二进制逆向（.NET/Electron/原生 PE）
 	CatMaterial Category = "material" // 字典、语料
 	CatRuntime  Category = "runtime"  // 脚本、证书、HTTP 等基础能力
 	// CatMiddleware 是中间件协议专项工具。
@@ -71,7 +72,7 @@ const (
 // 再打(Web/凭据)→ 深入(代码/利用)→ 辅助(隧道/外带/资料/通用)。
 var categoryOrder = []Category{
 	CatNetwork, CatDNS, CatWeb, CatCred, CatCode,
-	CatExploit, CatMobile, CatMiddleware, CatPivot, CatOOB, CatMaterial, CatRuntime,
+	CatExploit, CatMobile, CatReverse, CatMiddleware, CatPivot, CatOOB, CatMaterial, CatRuntime,
 }
 
 // CategoryLabel 分类的中文标签(页面展示)。
@@ -95,6 +96,8 @@ func CategoryLabel(c Category) string {
 		return "漏洞利用"
 	case CatMobile:
 		return "移动端逆向"
+	case CatReverse:
+		return "客户端逆向"
 	case CatMiddleware:
 		return "中间件协议"
 	case CatMaterial:
@@ -240,6 +243,16 @@ ln -sf /opt/jadx/bin/jadx-gui /usr/local/bin/jadx-gui 2>/dev/null || true
 `},
 	{Name: "frida", Bin: "frida", Purpose: "动态 Hook（SSL pinning/加密/风控绕过）", Kind: KindPip, Category: CatMobile, Pip: "frida-tools"},
 	{Name: "objection", Purpose: "Frida 封装：一键绕过 pinning/root 检测", Kind: KindPip, Category: CatMobile, Pip: "objection"},
+
+	// ── 客户端/桌面二进制逆向（P0b）：Electron asar + .NET ILSpy + 原生反汇编 ──
+	{Name: "asar", Purpose: "Electron asar 解包（桌面客户端源码/接口/密钥）", Kind: KindScript, Category: CatReverse,
+		Script: `if command -v npm >/dev/null 2>&1; then npm install -g @electron/asar >/dev/null 2>&1 || true; fi`},
+	{Name: "radare2", Purpose: "原生二进制反汇编/函数/交叉引用（Ghidra 的轻量替代）", Kind: KindApt, Category: CatReverse, Apt: "radare2", Dnf: "radare2"},
+	{Name: "ilspycmd", Purpose: ".NET 程序集反编译为 C#（需 .NET SDK，体积较大）", Kind: KindManual, Category: CatReverse,
+		Install: "curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/local/dotnet && ln -sf /usr/local/dotnet/dotnet /usr/local/bin/dotnet && dotnet tool install --global ilspycmd && ln -sf $HOME/.dotnet/tools/ilspycmd /usr/local/bin/ilspycmd"},
+	{Name: "ghidra", Bin: "analyzeHeadless", Purpose: "原生二进制伪代码反编译（约 1GB，按需安装）", Kind: KindManual, Category: CatReverse,
+		Detect:  "any:path:/opt/ghidra/support/analyzeHeadless,path:/usr/local/bin/analyzeHeadless",
+		Install: "下载 Ghidra Release 解压到 /opt/ghidra，并把 support/analyzeHeadless 加入 PATH（约 1GB）。"},
 
 	{Name: "wafw00f", Purpose: "WAF 识别", Kind: KindPip, Category: CatWeb, Pip: "wafw00f"},
 	// impacket：SMB/NTLM/票据工具集(smbexec/wmiexec/secretsdump 等)。

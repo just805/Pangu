@@ -156,8 +156,11 @@ func TaskMarkdown(in TaskDocxInput) string {
 	// ── 四、攻击路径（C2：与 Word 同源）──
 	writeAttackChainMarkdown(&b, in.AttackChain, in.AssetNames)
 
-	// ── 五、修复优先级路线图 ──
-	b.WriteString("## 五、修复优先级路线图\n\n")
+	// ── 五、客户端/二进制分析（P0）──
+	writeReverseChapterMarkdown(&b, in.ReverseSamples, in.ReverseSecrets)
+
+	// ── 六、修复优先级路线图 ──
+	b.WriteString("## 六、修复优先级路线图\n\n")
 	tiers := []struct {
 		title  string
 		sevs   []string

@@ -509,6 +509,104 @@ export interface Insights {
   companies: InsightCompany[];
 }
 
+// ---- 客户端/二进制逆向分析（P0）----
+export interface ReverseSection {
+  name: string;
+  size: number;
+  entropy: number;
+  executable?: boolean;
+  writable?: boolean;
+}
+
+export interface ReverseImportGroup {
+  dll: string;
+  funcs: string[];
+}
+
+export interface ReverseMeta {
+  format?: string;
+  machine?: string;
+  magic?: string;
+  subsystem?: string;
+  timestamp?: string;
+  entry_point?: number;
+  image_base?: number;
+  dotnet?: boolean;
+  signed?: boolean;
+  packer?: string;
+  pdb?: string;
+  mitigations?: string[];
+  sections?: ReverseSection[];
+  imports?: ReverseImportGroup[];
+  urls?: string[];
+  domains?: string[];
+  strings_top?: string[];
+  string_count?: number;
+  secret_count?: number;
+  note?: string;
+}
+
+export interface ReverseSecret {
+  id: number;
+  sample_id: number;
+  rule: string;
+  match: string;
+  context: string;
+  offset: number;
+  section?: string;
+  source?: "binary" | "decompile" | string;
+  confidence: number;
+}
+
+export interface ReverseSample {
+  id: number;
+  task_id: number;
+  filename: string;
+  sha256: string;
+  size_bytes: number;
+  kind: string;
+  status: "uploaded" | "analyzed" | "failed" | string;
+  metadata: ReverseMeta;
+  error?: string;
+  decompile_engine?: string;
+  decompile_status?: "running" | "done" | "failed" | string;
+  decompile_error?: string;
+  decompiled_at?: string;
+  created_at: string;
+  analyzed_at?: string;
+  secret_count: number;
+}
+
+export interface ReverseSampleDetail {
+  sample: ReverseSample;
+  secrets: ReverseSecret[];
+  duplicate?: boolean;
+}
+
+export interface ReverseDecompiledFile {
+  path: string;
+  size: number;
+  text: boolean;
+}
+
+export interface ReverseDecompiled {
+  status?: string;
+  engine?: string;
+  error?: string;
+  files: ReverseDecompiledFile[];
+  total_bytes?: number;
+}
+
+export interface ReverseDecompileResult {
+  sample: ReverseSample;
+  files: ReverseDecompiledFile[];
+  engine?: string;
+  status?: string;
+  error?: string;
+  secret_count?: number;
+  total_bytes?: number;
+}
+
 // 播报板一页:按创建顺序分页的节点 + 这一页涉及的边 + 边另一端的节点(refs,按 id 索引),
 // 这样每条播报都能说清「从哪来、产出了什么」,而不用把整张图拉下来。
 export interface ExplorationNodePage {

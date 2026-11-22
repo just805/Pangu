@@ -49,6 +49,7 @@ import { InterceptTab } from "./_tabs/intercept-tab";
 import { OverviewTab } from "./_tabs/overview-tab";
 import { ReportTab } from "./_tabs/report-tab";
 import { RetestsTab } from "./_tabs/retests-tab";
+import { ReverseTab } from "./_tabs/reverse-tab";
 import { SessionsTab } from "./_tabs/sessions-tab";
 
 const TABS = [
@@ -56,6 +57,7 @@ const TABS = [
   { value: "overview", label: "总览" },
   { value: "graph", label: "探索链路" },
   { value: "chain", label: "攻击链" },
+  { value: "reverse", label: "逆向分析" },
   { value: "broadcast", label: "播报板" },
   { value: "findings", label: "发现" },
   { value: "retests", label: "复测" },
@@ -499,6 +501,9 @@ function TaskDetailInner() {
         </TabsContent>
         <TabsContent value="chain" className="mt-0">
           <AttackChainTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="reverse" className="mt-0">
+          <ReverseTab taskId={id} />
         </TabsContent>
         <TabsContent value="broadcast" className="mt-0">
           <BroadcastTab taskId={id} />
