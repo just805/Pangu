@@ -386,10 +386,10 @@ var findingBrackets = regexp.MustCompile(`[（(【\[][^）)】\]]*[）)】\]]`)
 // 没有资产锚定时，旧指纹退化为「类别|名称」，不同端点/参数的同类漏洞会被合并；
 // 有了定位键就能区分，同时仍把「同一漏洞换证据再报一次」合并掉。
 var (
-	findingCVERe  = regexp.MustCompile(`(?i)\bCVE-\d{4}-\d{4,}\b`)
+	findingCVERe = regexp.MustCompile(`(?i)\bCVE-\d{4}-\d{4,}\b`)
 	// 排除字符同时覆盖半角与全角标点。此前未排除全角左括号（U+FF08），
 	// 「http://host（说明文字」会被整段吞进 URL，导致解析失败并产生垃圾键。
-	findingURLRe = regexp.MustCompile(`(?i)https?://[^\s"'<>（）()【】\[\]，,。；;]+`)
+	findingURLRe  = regexp.MustCompile(`(?i)https?://[^\s"'<>（）()【】\[\]，,。；;]+`)
 	findingPathRe = regexp.MustCompile(`(/[a-zA-Z0-9_\-./]{3,})`)
 	findingPortRe = regexp.MustCompile(`(?i)(?:端口|port)\s*[:=]?\s*(\d{1,5})`)
 )
@@ -491,6 +491,12 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 			if err != nil {
 				return nil, err
 			}
+			// 证据合并可能改变这条 finding 的产出意图/血缘，链关系同步重建。
+			if in.TaskID > 0 && in.ExplorationID > 0 {
+				if err := DeriveFindingChainsTx(tx, in.ExplorationID); err != nil {
+					return nil, err
+				}
+			}
 			return out, nil
 		}
 	}
@@ -576,7 +582,16 @@ GROUP BY f.task_id ORDER BY f.task_id`, fp, in.TaskID)
 	}
 	var err error
 	out.Traffic, err = FindingTrafficTx(tx, out.FindingID)
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	// 攻击链（C1）：finding 落库即按探索图血缘重建链关系，报告/前端随后读取即可。
+	if in.TaskID > 0 && in.ExplorationID > 0 {
+		if err := DeriveFindingChainsTx(tx, in.ExplorationID); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // RecordFinding is the atomic legacy/no-recorder path used by tools and tests.

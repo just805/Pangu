@@ -128,6 +128,8 @@ func (s *Server) assembleTaskReport(ctx context.Context, t *Task) (report.TaskDo
 	}
 	goals, _ := t.Store.ListByKind(db.KindGoal, 1000)
 	execSummary, _, _ := s.m.pg.GetSetting(execSummaryKey(t.ID))
+	// 攻击路径（C2/C3）：与任务详情「攻击链」页同源；失败时留空，报告仍保留章节。
+	chain, _ := t.Store.AttackChain()
 	return report.TaskDocxInput{
 		Title:          fmt.Sprintf("渗透测试报告 — %s", t.Description),
 		Goal:           t.Goal,
@@ -144,6 +146,7 @@ func (s *Server) assembleTaskReport(ctx context.Context, t *Task) (report.TaskDo
 		ArtifactImage:  s.artifactImageResolver(t.ID, 0),
 		ExecSummary:    execSummary,
 		CVEInfo:        s.cveIntelFor(ctx, findings),
+		AttackChain:    chain,
 	}, nil
 }
 

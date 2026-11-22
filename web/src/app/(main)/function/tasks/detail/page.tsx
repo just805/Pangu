@@ -40,6 +40,7 @@ import { api } from "@/lib/api";
 import type { LLMProfile, Task } from "@/lib/types";
 
 import { AssetsTab } from "./_tabs/assets-tab";
+import { AttackChainTab } from "./_tabs/attack-chain-tab";
 import { BroadcastTab } from "./_tabs/broadcast-tab";
 import { CoverageGraphTab } from "./_tabs/coverage-graph-tab";
 import { FindingsTab } from "./_tabs/findings-tab";
@@ -54,6 +55,7 @@ const TABS = [
   { value: "sessions", label: "会话" },
   { value: "overview", label: "总览" },
   { value: "graph", label: "探索链路" },
+  { value: "chain", label: "攻击链" },
   { value: "broadcast", label: "播报板" },
   { value: "findings", label: "发现" },
   { value: "retests", label: "复测" },
@@ -494,6 +496,9 @@ function TaskDetailInner() {
         </TabsContent>
         <TabsContent value="graph" className="mt-0">
           <GraphTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="chain" className="mt-0">
+          <AttackChainTab taskId={id} />
         </TabsContent>
         <TabsContent value="broadcast" className="mt-0">
           <BroadcastTab taskId={id} />

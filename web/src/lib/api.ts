@@ -19,6 +19,7 @@ import type {
   Asset,
   AssetInterceptRule,
   AssetInterceptRuleInput,
+  AttackChain,
   Audit,
   BatchCategoryItem,
   BatchControlItem,
@@ -52,6 +53,7 @@ import type {
   HostenvStatus,
   InstallBatchResult,
   InstallJob,
+  Insights,
   ProxyCheckResult,
   IntentAsset,
   InterceptApprovalFilter,
@@ -803,6 +805,11 @@ export const api = {
       .then(arr)
       .catch(() => [] as ConvTokenSummary[]),
   explorationGraph: (task?: string) => get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/graph${tq(task)}`),
+  // 攻击链（C1-C3）：finding 步骤 + 推进关系，与报告「攻击路径」章同源。
+  attackChain: (task: string) => get<AttackChain>(`/tasks/${encodeURIComponent(task)}/attack-chain`),
+  // 跨任务洞察（C4）：按天/企业聚合任务、严重度与 token 成本。
+  insights: (days = 30, company?: number) =>
+    get<Insights>(`/insights?days=${days}${company ? `&company=${company}` : ""}`),
   // 播报板:服务端按创建顺序分页的探索节点(默认最新在前)。
   explorationNodes: (task: string, query: ExplorationNodeQuery = {}) => {
     const q = new URLSearchParams();

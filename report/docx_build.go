@@ -48,6 +48,9 @@ type TaskDocxInput struct {
 	// CVEInfo 漏洞情报富化（A11）：CVE-ID → 情报快照。server 组装时查
 	// vulnintel 情报库；nil/缺项 = 该 finding 不渲染富化块。
 	CVEInfo map[string]*CVEIntel
+	// AttackChain 攻击路径（C2）：finding 血缘投影的链路叙事。nil = 报告仍保留
+	// 「攻击路径」章并说明未形成链路，避免读者误以为漏章。
+	AttackChain *db.AttackChain
 }
 
 func sevRankKey(f *db.DBFinding) int {
@@ -258,8 +261,13 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 	}
 	d.PageBreak()
 
-	// ── 四、修复优先级路线图（A15：立即/计划/择机三档）──
-	d.H1("四、修复优先级路线图")
+	// ── 四、攻击路径（C2：从初始访问到最终影响的链路叙事，每步带证明点）──
+	d.H1("四、攻击路径")
+	writeAttackChainDocx(d, in.AttackChain, in.AssetNames)
+	d.PageBreak()
+
+	// ── 五、修复优先级路线图（A15：立即/计划/择机三档）──
+	d.H1("五、修复优先级路线图")
 	writeRemediationRoadmap(d, in.Findings)
 
 	// ── 附录 A：资产清单（A16）──

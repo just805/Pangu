@@ -428,6 +428,87 @@ export interface TaskNode {
   blocked_reason?: string; // 意图为什么停（撞步数上限/运行超时/任务收尾/被终止/出错）
 }
 
+// ---- 攻击链（路线图 C1-C3）----
+export type ChainRel = "derived_from" | "enables" | "chained_with";
+
+export interface AttackChainProof {
+  kind: "intent" | "fact" | "traffic" | "evidence";
+  label: string;
+  node_id?: number;
+  traffic_count?: number;
+}
+
+export interface AttackChainStep {
+  seq: number;
+  finding_id: number;
+  node_id: number;
+  title: string;
+  severity: string;
+  vuln_class: string;
+  status: string;
+  summary: string;
+  worker: string;
+  created_at: string;
+  asset_ids: number[];
+  intent_id?: number;
+  intent_summary?: string;
+  proofs: AttackChainProof[];
+}
+
+export interface AttackChainEdge {
+  src: number;
+  dst: number;
+  rel: ChainRel;
+}
+
+export interface AttackChain {
+  steps: AttackChainStep[];
+  edges: AttackChainEdge[];
+}
+
+// ---- 跨任务洞察（路线图 C4）----
+export interface InsightSeverityCounts {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  other: number;
+}
+
+export interface InsightDay {
+  date: string;
+  tasks: number;
+  findings: number;
+  severity: InsightSeverityCounts;
+}
+
+export interface InsightCompany {
+  company_id: number;
+  name: string;
+  tasks: number;
+  findings: number;
+  severity: InsightSeverityCounts;
+  tokens: number;
+  tokens_per_finding: number;
+}
+
+export interface InsightTotals {
+  tasks: number;
+  findings: number;
+  severity: InsightSeverityCounts;
+  tokens: number;
+  tokens_per_finding: number;
+}
+
+export interface Insights {
+  days: number;
+  from: string;
+  to: string;
+  totals: InsightTotals;
+  trend: InsightDay[];
+  companies: InsightCompany[];
+}
+
 // 播报板一页:按创建顺序分页的节点 + 这一页涉及的边 + 边另一端的节点(refs,按 id 索引),
 // 这样每条播报都能说清「从哪来、产出了什么」,而不用把整张图拉下来。
 export interface ExplorationNodePage {

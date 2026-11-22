@@ -153,8 +153,11 @@ func TaskMarkdown(in TaskDocxInput) string {
 		b.WriteString("_本次未确认漏洞。_\n\n")
 	}
 
-	// ── 四、修复优先级路线图 ──
-	b.WriteString("## 四、修复优先级路线图\n\n")
+	// ── 四、攻击路径（C2：与 Word 同源）──
+	writeAttackChainMarkdown(&b, in.AttackChain, in.AssetNames)
+
+	// ── 五、修复优先级路线图 ──
+	b.WriteString("## 五、修复优先级路线图\n\n")
 	tiers := []struct {
 		title  string
 		sevs   []string

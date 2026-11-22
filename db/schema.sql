@@ -1198,6 +1198,25 @@ CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, created_at DE
 -- 「按资产」视图靠 asset_ids @> '[<id>]' 反查发现,没有这个 GIN 索引就是全表扫。
 CREATE INDEX IF NOT EXISTS idx_findings_asset_ids ON findings USING GIN(asset_ids jsonb_path_ops);
 
+-- 攻击链（C1）：finding 之间的推进关系。由探索图血缘自动推导（source='auto'），
+-- rel 语义：
+--   derived_from  上游 finding 的节点被显式作为下游意图的 derived_from 父节点
+--   enables       上游 finding 的产出意图是下游意图的血缘祖先（凭据/信息推进）
+--   chained_with  同一条意图产出的多个 finding（同源并报）
+-- 自动边可整批重建；source='manual' 保留给后续人工修订。
+CREATE TABLE IF NOT EXISTS finding_chain_edges (
+    exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+    src_finding_id BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    dst_finding_id BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    rel            TEXT NOT NULL,
+    source         TEXT NOT NULL DEFAULT 'auto',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (exploration_id, src_finding_id, dst_finding_id, rel),
+    CONSTRAINT ck_fchain_rel CHECK (rel IN ('derived_from','enables','chained_with')),
+    CONSTRAINT ck_fchain_noself CHECK (src_finding_id <> dst_finding_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fchain_exp ON finding_chain_edges(exploration_id);
+
 -- 手动复测属于独立会话；结论与原漏洞处置状态分开保存。
 CREATE TABLE IF NOT EXISTS finding_retests (
     id BIGSERIAL PRIMARY KEY,
