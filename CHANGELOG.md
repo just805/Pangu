@@ -2,6 +2,31 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.11] - 2026-11-22
+
+### 新增（攻击链叙事与可视化 C1-C4）
+
+- **C1 findings 链关系**：新增 `finding_chain_edges` 表，worker 上报漏洞时按探索图血缘
+  自动推导三种推进关系——`derived_from`（上游 finding 被显式作为下游意图父节点）、
+  `enables`（上游 finding 的产出意图是下游意图的血缘祖先）、`chained_with`
+  （同一意图产出的多条漏洞）。历史任务首次读取时自动回填；自动边可整批重建，
+  保留 `source='manual'` 供后续人工修订。
+- **C2 报告「攻击路径」章**：Word 与 Markdown 同源新增第四章，展示链路总览、
+  逐步叙事（首步标「初始访问」、末步标「最终影响」）、每步证明点
+  （推进意图/事实/流量证据/原始证据）与后续推进关系；修复优先级路线图顺延为第五章。
+- **C3 攻击链可视化**：Word 内嵌纯 Go 绘制的 PNG 路径图（标准库 + 内嵌仿宋字体，
+  无 graphviz/cgo 依赖，字体缺失时静默降级）；任务详情新增「攻击链」页，
+  基于 @xyflow/react 输出交互图，与报告共用 `GET /api/tasks/{id}/attack-chain`。
+- **C4 跨任务洞察页**：新增 `GET /api/insights`，按天/企业聚合任务数、有效漏洞
+  严重度分布、token 总消耗与单位发现成本（token/漏洞）；新增「洞察」导航页，
+  口径与报告一致（排除 false_positive/duplicate/ignored）。
+
+### 验证
+
+- `go build ./...`、`go vet ./...`；
+- `go test ./db/ -count=1`（真 PostgreSQL）、`go test ./report/`、server 报告/漏洞相关测试；
+- 前端 `npx tsc --noEmit`、`NEXT_EXPORT=1 npx next build`（`/function/insights` 正常导出）。
+
 ## [0.1.10] - 2026-11-19
 
 ### 修复
