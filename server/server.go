@@ -950,6 +950,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/chat/mentions", s.searchChatMentions)
 	mux.HandleFunc("POST /api/chat", s.chat)
 	mux.HandleFunc("POST /api/chat/upload", s.chatUpload) // 方式1 文件上传:落到会话/任务工作目录 uploads/
+	// 大附件分片上传（Cloudflare 单请求体限制的场景）。
+	mux.HandleFunc("POST /api/chat/uploads", s.chatChunkInit)
+	mux.HandleFunc("PUT /api/chat/uploads/{uid}/chunks/{index}", s.chatChunkPut)
+	mux.HandleFunc("POST /api/chat/uploads/{uid}/complete", s.chatChunkComplete)
+	mux.HandleFunc("DELETE /api/chat/uploads/{uid}", s.chatChunkDelete)
 	mux.HandleFunc("GET /api/tasks/{id}/chat/status", s.taskChatStatus)
 	mux.HandleFunc("POST /api/tasks/{id}/chat/stop", s.stopChat)
 

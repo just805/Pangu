@@ -3270,6 +3270,7 @@ function CreateTaskSheet({
   });
   // 方式1 文件上传:建任务前把文件暂存到 drafts/<draftId>/uploads/,拿回绝对路径追加进描述。
   const [uploading, setUploading] = React.useState(false);
+  const [uploadProgress, setUploadProgress] = React.useState<number | null>(null);
   const [uploadCount, setUploadCount] = React.useState(0);
   const draftIdRef = React.useRef<string>("");
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -3297,14 +3298,23 @@ function CreateTaskSheet({
         globalThis.crypto?.randomUUID?.() ?? `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     }
     setUploading(true);
+    setUploadProgress(0);
     try {
-      const r = await api.chatUpload("staging", draftIdRef.current, Array.from(files));
+      const r = await api.chatUpload("staging", draftIdRef.current, Array.from(files), (sent, total) => {
+        setUploadProgress(total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : null);
+      });
       setDescription((prev) => appendUploads(prev, r.attachments));
       setUploadCount((n) => n + r.attachments.length);
     } catch (e) {
-      toast.error(`上传失败：${(e as Error).message}`);
+      const err = e as Error & { status?: number };
+      const msg =
+        err.status === 413
+          ? "上传被 Cloudflare/反向代理拒绝（413），分片上传也未通过，请检查代理请求体限制"
+          : err.message;
+      toast.error(`上传失败：${msg}`);
     } finally {
       setUploading(false);
+      setUploadProgress(null);
       if (fileInputRef.current) fileInputRef.current.value = ""; // allow re-picking the same file
     }
   }
@@ -3455,7 +3465,7 @@ function CreateTaskSheet({
                   disabled={uploading}
                 >
                   {uploading ? <Loader2Icon className="animate-spin" /> : <PaperclipIcon />}
-                  上传文件
+                  {uploading && uploadProgress !== null ? `上传 ${uploadProgress}%` : "上传文件"}
                 </Button>
                 <span className="text-muted-foreground text-xs">
                   {uploadCount > 0

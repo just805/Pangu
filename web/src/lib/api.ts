@@ -146,6 +146,9 @@ function httpStatusError(prefix: string, status: number, body: string): Error & 
   return err;
 }
 
+// 附件超过该阈值走分片上传：单片 16MB，低于 Cloudflare 各档位单请求体限制。
+const CHAT_UPLOAD_CHUNK_THRESHOLD = 80 * 1024 * 1024;
+
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   // Mock handler 按需加载:handler 静态引着 242KB 的 demo 数据集(data.ts),无条件
   // import 会把它拖进首屏主包——生产构建(NEXT_PUBLIC_MOCK 未设)白白付出体积。
@@ -1179,7 +1182,12 @@ export const api = {
     post<{ reply: string; mode: string }>(`/chat${tq(task)}`, { message, attachments, seg }),
   chatStatus: (taskId: string) => get<{ running: boolean }>(`/tasks/${taskId}/chat/status`),
   // 方式1 文件上传:落到会话/任务工作目录 uploads/，返回可供 agent Read 的相对路径。
-  chatUpload: async (scope: "task" | "session" | "staging", id: string, files: File[]) => {
+  chatUpload: async (
+    scope: "task" | "session" | "staging",
+    id: string,
+    files: File[],
+    onProgress?: (sent: number, total: number) => void,
+  ) => {
     if (MOCK)
       return {
         attachments: files.map((f) => ({
@@ -1189,16 +1197,77 @@ export const api = {
           abs: `/mock/${f.name}`,
         })),
       };
-    const fd = new FormData();
-    for (const f of files) fd.append("file", f);
     const token = getToken();
-    const r = await fetch(`/api/chat/upload?scope=${scope}&id=${encodeURIComponent(id)}`, {
-      method: "POST",
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: fd,
-    });
-    if (!r.ok) throw new Error(`上传失败: ${r.status} ${await r.text()}`);
-    return r.json() as Promise<{ attachments: ChatAttachment[] }>;
+    const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+    const query = `scope=${scope}&id=${encodeURIComponent(id)}`;
+    const total = files.reduce((n, f) => n + f.size, 0);
+    let sent = 0;
+    const report = (n: number) => {
+      sent += n;
+      onProgress?.(sent, total);
+    };
+    const uploadSingle = async (batch: File[]) => {
+      const fd = new FormData();
+      for (const f of batch) fd.append("file", f);
+      const r = await fetch(`/api/chat/upload?${query}`, {
+        method: "POST",
+        headers: authHeaders,
+        body: fd,
+      });
+      if (!r.ok) throw httpStatusError("上传失败", r.status, await r.text());
+      const data = (await r.json()) as { attachments: ChatAttachment[] };
+      report(batch.reduce((n, f) => n + f.size, 0));
+      return data.attachments;
+    };
+    const uploadChunked = async (file: File) => {
+      const initRes = await fetch(`/api/chat/uploads?${query}`, {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, size: file.size }),
+      });
+      if (!initRes.ok) throw httpStatusError("初始化分片上传失败", initRes.status, await initRes.text());
+      const init = (await initRes.json()) as ReverseChunkInit;
+      try {
+        for (let index = 0, offset = 0; offset < file.size; index++, offset += init.chunk_size) {
+          const blob = file.slice(offset, Math.min(offset + init.chunk_size, file.size));
+          const res = await fetch(`/api/chat/uploads/${init.upload_id}/chunks/${index}?${query}`, {
+            method: "PUT",
+            headers: { ...authHeaders, "Content-Type": "application/octet-stream" },
+            body: blob,
+          });
+          if (!res.ok) {
+            throw httpStatusError(`上传第 ${index + 1}/${init.chunk_count} 片失败`, res.status, await res.text());
+          }
+          report(blob.size);
+        }
+        const done = await fetch(`/api/chat/uploads/${init.upload_id}/complete?${query}`, {
+          method: "POST",
+          headers: authHeaders,
+        });
+        if (!done.ok) throw httpStatusError("合并分片失败", done.status, await done.text());
+        const data = (await done.json()) as { attachments: ChatAttachment[] };
+        return data.attachments;
+      } catch (e) {
+        void fetch(`/api/chat/uploads/${init.upload_id}?${query}`, { method: "DELETE", headers: authHeaders }).catch(
+          () => {},
+        );
+        throw e;
+      }
+    };
+    const large = files.filter((f) => f.size > CHAT_UPLOAD_CHUNK_THRESHOLD);
+    const small = files.filter((f) => f.size <= CHAT_UPLOAD_CHUNK_THRESHOLD);
+    const attachments: ChatAttachment[] = [];
+    if (small.length > 0) {
+      try {
+        attachments.push(...(await uploadSingle(small)));
+      } catch (e) {
+        // 兜底：代理限制可能低于预期，413 时逐个小文件改分片。
+        if ((e as { status?: number }).status !== 413) throw e;
+        for (const f of small) attachments.push(...(await uploadChunked(f)));
+      }
+    }
+    for (const f of large) attachments.push(...(await uploadChunked(f)));
+    return { attachments };
   },
   stopChat: (taskId: string) => post<{ status: string }>(`/tasks/${taskId}/chat/stop`, {}),
   gc: (ttl = 86400) => post<{ removed: number }>(`/gc?ttl=${ttl}`, {}),
