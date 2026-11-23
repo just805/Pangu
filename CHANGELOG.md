@@ -2,6 +2,24 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.15] - 2026-11-23
+
+### 修复（大样本上传受 Cloudflare 请求体限制）
+
+- 新增分片上传：16MB/片，服务端按序合并，绕开 Cloudflare 免费/Pro 100MB、
+  Business 200MB 的单请求体限制；单样本上限提升到 512MB。前端超过 80MB
+  自动切分片上传并显示进度。
+- 分片合并后的静态分析改为后台异步（`analyzing` 状态），避免大样本分析
+  超过 Cloudflare 100 秒响应超时；前端轮询状态自动刷新结果。
+- 任务内大样本上传路径的读限时从 5 分钟放宽到 30 分钟；超出大小上限返回
+  明确的 400 提示。分片会话 24 小时未完成自动清理，目录随任务删除。
+
+### 验证
+
+- `go build ./...`、`go vet ./server/`；
+- `go test ./server -run "TestIsLongBodyPath|TestReverseChunkHelpers" -count=1`；
+- `npx tsc --noEmit`、`NEXT_EXPORT=1 npx next build`（36 个路由静态导出）。
+
 ## [0.1.14] - 2026-11-23
 
 ### 优化（登录页重新设计）
