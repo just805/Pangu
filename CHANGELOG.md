@@ -2,6 +2,18 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.16] - 2026-11-23
+
+### 修复（大样本上传 413 兜底）
+
+- 逆向样本单请求上传遇到 Cloudflare/反向代理 413 时，自动切换 16MB 分片上传，
+  不再直接失败；分片上传接口也会在错误中携带 HTTP 状态码供前端判断。
+- 上传错误不再展示 Cloudflare 原始 HTML，413 等状态码转为可读提示。
+
+### 验证
+
+- `npx tsc --noEmit`、`NEXT_EXPORT=1 npx next build`（36 个路由静态导出）。
+
 ## [0.1.15] - 2026-11-23
 
 ### 修复（大样本上传受 Cloudflare 请求体限制）
