@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,13 +16,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/just805/pangu/db"
 	"github.com/just805/pangu/reverse"
 )
 
 const (
-	maxReverseSampleBytes = 256 << 20 // 单样本 256MB
+	maxReverseSampleBytes = 512 << 20 // 单样本 512MB（与 workspace 上传上限一致）
 	maxReverseFormMemory  = 32 << 20
 )
 
@@ -87,10 +89,19 @@ func (s *Server) reverseUpload(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(file, maxReverseSampleBytes+1))
+	n, copyErr := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(file, maxReverseSampleBytes+1))
 	closeErr := tmp.Close()
-	if err != nil || closeErr != nil {
-		writeErr(w, 500, "保存样本失败")
+	if copyErr != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(copyErr, &maxErr) {
+			writeErr(w, 400, fmt.Sprintf("样本超过大小上限（%d MB）", maxReverseSampleBytes>>20))
+			return
+		}
+		writeErr(w, 500, "保存样本失败："+copyErr.Error())
+		return
+	}
+	if closeErr != nil {
+		writeErr(w, 500, "保存样本失败："+closeErr.Error())
 		return
 	}
 	if n > maxReverseSampleBytes {
@@ -110,11 +121,17 @@ func (s *Server) reverseUpload(w http.ResponseWriter, r *http.Request) {
 	cleanup = false
 	_ = os.Chmod(final, 0o600)
 
+	s.registerReverseSample(w, r, t, name, sum, final, n)
+}
+
+// registerReverseSample 登记已落盘的样本并同步分析。单请求上传与分片合并共用，
+// 保证两条路径的响应结构、去重与错误处理一致。
+func (s *Server) registerReverseSample(w http.ResponseWriter, r *http.Request, t *Task, name, sum, final string, size int64) {
 	sample := &db.ReverseSample{
-		TaskID:      taskID,
+		TaskID:      reverseTaskID(t),
 		Filename:    name,
 		SHA256:      sum,
-		SizeBytes:   n,
+		SizeBytes:   size,
 		Status:      "uploaded",
 		StoragePath: final,
 	}
@@ -130,6 +147,10 @@ func (s *Server) reverseUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"sample": sample, "secrets": secrets, "duplicate": true})
 		return
 	}
+	if !inserted && sample.Status == "analyzing" {
+		writeJSON(w, 200, map[string]any{"sample": sample, "secrets": []db.ReverseSecret{}, "analyzing": true, "duplicate": true})
+		return
+	}
 	s.runReverseAnalysis(r.Context(), sample)
 	fresh, _ := s.m.pg.GetReverseSample(sample.ID)
 	if fresh != nil {
@@ -137,6 +158,54 @@ func (s *Server) reverseUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	secrets, _ := s.m.pg.ListReverseSecrets(sample.ID)
 	writeJSON(w, 200, map[string]any{"sample": sample, "secrets": secrets})
+}
+
+// registerReverseSampleAsync 用于分片上传：合并后立即返回，静态分析放到后台。
+// 大样本分析可能超过 Cloudflare 的 100 秒响应超时，必须先把请求收尾；前端轮询
+// 样本状态（analyzing → analyzed/failed）。
+func (s *Server) registerReverseSampleAsync(w http.ResponseWriter, r *http.Request, t *Task, name, sum, final string, size int64) {
+	sample := &db.ReverseSample{
+		TaskID:      reverseTaskID(t),
+		Filename:    name,
+		SHA256:      sum,
+		SizeBytes:   size,
+		Status:      "analyzing",
+		StoragePath: final,
+	}
+	inserted, err := s.m.pg.InsertReverseSample(r.Context(), sample)
+	if err != nil {
+		_ = os.Remove(final)
+		writeErr(w, 500, "登记样本失败："+err.Error())
+		return
+	}
+	if !inserted && sample.Status == "analyzed" {
+		secrets, _ := s.m.pg.ListReverseSecrets(sample.ID)
+		writeJSON(w, 200, map[string]any{"sample": sample, "secrets": secrets, "duplicate": true})
+		return
+	}
+	if !inserted && sample.Status == "analyzing" {
+		writeJSON(w, 200, map[string]any{"sample": sample, "secrets": []db.ReverseSecret{}, "analyzing": true, "duplicate": true})
+		return
+	}
+	sample.Status = "analyzing"
+	_ = s.m.pg.UpdateReverseSampleAnalysis(sample.ID, sample.Kind, "analyzing", sample.Metadata, "")
+	taskID := t.ID
+	go func(id int64) {
+		if s.engine != nil {
+			if !s.engine.beginTaskOperation(taskID) {
+				return
+			}
+			defer s.engine.decInflight(taskID)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		fresh, err := s.m.pg.GetReverseSample(id)
+		if err != nil || fresh == nil {
+			return
+		}
+		s.runReverseAnalysis(ctx, fresh)
+	}(sample.ID)
+	writeJSON(w, 200, map[string]any{"sample": sample, "secrets": []db.ReverseSecret{}, "analyzing": true})
 }
 
 func (s *Server) runReverseAnalysis(ctx context.Context, sample *db.ReverseSample) {

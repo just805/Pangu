@@ -607,6 +607,14 @@ export interface ReverseDecompileResult {
   total_bytes?: number;
 }
 
+// 大样本分片上传会话（Cloudflare 单请求体限制场景）。
+export interface ReverseChunkInit {
+  upload_id: string;
+  chunk_size: number;
+  chunk_count: number;
+  max_bytes: number;
+}
+
 // 播报板一页:按创建顺序分页的节点 + 这一页涉及的边 + 边另一端的节点(refs,按 id 索引),
 // 这样每条播报都能说清「从哪来、产出了什么」,而不用把整张图拉下来。
 export interface ExplorationNodePage {

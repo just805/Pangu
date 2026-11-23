@@ -118,7 +118,7 @@ func Analyze(path, originalName string) (*Result, error) {
 	return res, nil
 }
 
-const maxAnalyzeBytes = 256 << 20 // 256MB
+const maxAnalyzeBytes = 512 << 20 // 512MB（与上传上限一致）
 
 func fillPE(f *pe.File, data []byte, m *Meta) {
 	m.Format = "PE"

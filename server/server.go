@@ -790,6 +790,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/reverse/samples/{sid}/decompile", s.reverseDecompile)
 	mux.HandleFunc("GET /api/tasks/{id}/reverse/samples/{sid}/decompiled", s.reverseDecompiled)
 	mux.HandleFunc("GET /api/tasks/{id}/reverse/samples/{sid}/decompiled/file", s.reverseDecompiledFile)
+	// 大样本分片上传（Cloudflare 单请求体限制的场景）。
+	mux.HandleFunc("POST /api/tasks/{id}/reverse/uploads", s.reverseChunkInit)
+	mux.HandleFunc("PUT /api/tasks/{id}/reverse/uploads/{uid}/chunks/{index}", s.reverseChunkPut)
+	mux.HandleFunc("POST /api/tasks/{id}/reverse/uploads/{uid}/complete", s.reverseChunkComplete)
+	mux.HandleFunc("DELETE /api/tasks/{id}/reverse/uploads/{uid}", s.reverseChunkDelete)
 	mux.HandleFunc("GET /api/tasks/{id}/asset-refs", s.taskAssetRefs)
 	mux.HandleFunc("POST /api/tasks/{id}/assets", s.attachTaskAssets)
 	mux.HandleFunc("DELETE /api/tasks/{id}/assets/{assetID}", s.detachTaskAsset)

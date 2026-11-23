@@ -14,6 +14,10 @@ import { api } from "@/lib/api";
 import type { ReverseDecompiled, ReverseSample, ReverseSampleDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+const MAX_SAMPLE_BYTES = 512 * 1024 * 1024;
+// 超过该阈值改走分片上传：单片 16MB，低于 Cloudflare 各档位单请求体限制。
+const CHUNK_UPLOAD_THRESHOLD = 80 * 1024 * 1024;
+
 const kindCN: Record<string, string> = {
   pe: "Windows PE",
   "pe-invalid": "PE（解析失败）",
@@ -27,6 +31,7 @@ const kindCN: Record<string, string> = {
 
 const statusCN: Record<string, string> = {
   uploaded: "待分析",
+  analyzing: "分析中",
   analyzed: "已分析",
   failed: "分析失败",
 };
@@ -74,6 +79,7 @@ export function ReverseTab({ taskId }: { taskId: string }) {
   const [selectedId, setSelectedId] = React.useState<number | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [uploading, setUploading] = React.useState(false);
+  const [uploadProgress, setUploadProgress] = React.useState<number | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [showPlain, setShowPlain] = React.useState(false);
@@ -83,6 +89,7 @@ export function ReverseTab({ taskId }: { taskId: string }) {
   const [fileContent, setFileContent] = React.useState("");
   const [fileLoading, setFileLoading] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
+  const polling = React.useRef<Set<number>>(new Set());
 
   const openFile = React.useCallback(
     async (sampleId: number, path: string) => {
@@ -117,6 +124,35 @@ export function ReverseTab({ taskId }: { taskId: string }) {
     [taskId, openFile],
   );
 
+  // 分片上传的静态分析在服务端后台执行：轮询到 analyzing 结束再刷新详情。
+  const pollSample = React.useCallback(
+    async (sampleId: number) => {
+      if (polling.current.has(sampleId)) return;
+      polling.current.add(sampleId);
+      try {
+        for (let i = 0; i < 240; i++) {
+          await new Promise((resolve) => window.setTimeout(resolve, 2500));
+          const d = await api.reverseSample(taskId, sampleId);
+          if (d.sample.status === "analyzing") continue;
+          setDetail((prev) => (prev?.sample.id === sampleId ? d : prev));
+          setSamples(await api.reverseSamples(taskId));
+          if (d.sample.status === "analyzed") {
+            toast.success(`分析完成：${d.secrets.length} 条敏感信息候选`);
+          } else {
+            toast.error(d.sample.error || "样本分析失败");
+          }
+          void loadDecompiled(sampleId);
+          return;
+        }
+      } catch {
+        /* 轮询失败保持现状，用户可手动刷新 */
+      } finally {
+        polling.current.delete(sampleId);
+      }
+    },
+    [taskId, loadDecompiled],
+  );
+
   const load = React.useCallback(
     async (select?: number | null) => {
       setLoading(true);
@@ -127,7 +163,9 @@ export function ReverseTab({ taskId }: { taskId: string }) {
         const id = select ?? selectedId ?? list[0]?.id ?? null;
         setSelectedId(id);
         if (id) {
-          setDetail(await api.reverseSample(taskId, id));
+          const d = await api.reverseSample(taskId, id);
+          setDetail(d);
+          if (d.sample.status === "analyzing") void pollSample(id);
           void loadDecompiled(id);
         } else {
           setDetail(null);
@@ -138,7 +176,7 @@ export function ReverseTab({ taskId }: { taskId: string }) {
         setLoading(false);
       }
     },
-    [taskId, selectedId, loadDecompiled],
+    [taskId, selectedId, loadDecompiled, pollSample],
   );
 
   React.useEffect(() => {
@@ -186,22 +224,45 @@ export function ReverseTab({ taskId }: { taskId: string }) {
     const input = e.currentTarget;
     const file = input.files?.[0];
     if (!file) return;
+    if (file.size > MAX_SAMPLE_BYTES) {
+      const msg = `样本超过 ${MAX_SAMPLE_BYTES >> 20}MB 上限，无法上传`;
+      setError(msg);
+      toast.error(msg);
+      input.value = "";
+      return;
+    }
     setUploading(true);
+    setUploadProgress(file.size > CHUNK_UPLOAD_THRESHOLD ? 0 : null);
     setError("");
     try {
-      const d = await api.reverseUpload(taskId, file);
-      toast.success(`已分析 ${d.sample.filename}，命中 ${d.secrets.length} 条敏感信息候选`);
+      const d =
+        file.size > CHUNK_UPLOAD_THRESHOLD
+          ? await api.reverseUploadChunked(taskId, file, (sent) =>
+              setUploadProgress(Math.min(100, Math.round((sent / file.size) * 100))),
+            )
+          : await api.reverseUpload(taskId, file);
+      const analyzing = d.sample.status === "analyzing";
+      if (analyzing) {
+        toast.info(`已上传 ${d.sample.filename}，正在后台分析…`);
+      } else {
+        toast.success(`已分析 ${d.sample.filename}，命中 ${d.secrets.length} 条敏感信息候选`);
+      }
       setDetail(d);
       setSelectedId(d.sample.id);
       const list = await api.reverseSamples(taskId);
       setSamples(list);
-      void loadDecompiled(d.sample.id);
+      if (analyzing) {
+        void pollSample(d.sample.id);
+      } else {
+        void loadDecompiled(d.sample.id);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "上传失败";
       setError(msg);
       toast.error(msg);
     } finally {
       setUploading(false);
+      setUploadProgress(null);
       input.value = "";
     }
   };
@@ -211,7 +272,9 @@ export function ReverseTab({ taskId }: { taskId: string }) {
     setLoading(true);
     setError("");
     try {
-      setDetail(await api.reverseSample(taskId, id));
+      const d = await api.reverseSample(taskId, id);
+      setDetail(d);
+      if (d.sample.status === "analyzing") void pollSample(id);
       void loadDecompiled(id);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "加载样本失败");
@@ -295,7 +358,11 @@ export function ReverseTab({ taskId }: { taskId: string }) {
           <input ref={fileRef} type="file" className="hidden" onChange={onUpload} />
           <Button size="sm" onClick={() => fileRef.current?.click()} disabled={uploading}>
             <Upload className={cn("size-3.5", uploading && "animate-pulse")} />
-            {uploading ? "分析中…" : "上传样本"}
+            {uploading
+              ? uploadProgress !== null && uploadProgress < 100
+                ? `上传 ${uploadProgress}%`
+                : "分析中…"
+              : "上传样本"}
           </Button>
           <Button size="sm" variant="outline" onClick={() => void load(selectedId)} disabled={loading}>
             <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
@@ -312,8 +379,8 @@ export function ReverseTab({ taskId }: { taskId: string }) {
             <FileSearch className="size-9 text-muted-foreground/60" />
             <p className="font-medium text-sm">还没有上传客户端/二进制样本</p>
             <p className="max-w-lg text-muted-foreground text-xs">
-              上传 exe/dll/elf/apk/jar/asar 等样本后，平台会做静态 triage（文件头、节区、熵、导入表、签名、
-              .NET/加壳识别）并扫描硬编码凭据。样本只读，绝不执行。
+              上传 exe/dll/elf/apk/jar/asar 等样本（单样本 ≤512MB）后，平台会做静态 triage（文件头、节区、熵、导入表、签名、
+              .NET/加壳识别）并扫描硬编码凭据。大文件自动分片上传，Cloudflare 下也可用；样本只读，绝不执行。
             </p>
             <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
               <Upload className="size-3.5" />

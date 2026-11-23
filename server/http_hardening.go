@@ -28,16 +28,38 @@ var apiLongBodyPrefixes = []string{
 	"/api/chat/upload",
 }
 
+// apiLongBodySuffixes 覆盖「任务内大样本上传」：单请求 POST /api/tasks/{id}/reverse/samples，
+// 以及分片上传 /api/tasks/{id}/reverse/uploads/{uid}/chunks/{index}。
+var apiLongBodySuffixes = []string{
+	"/reverse/samples",
+}
+
+func isLongBodyPath(path string) bool {
+	for _, p := range apiLongBodyPrefixes {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	if strings.HasPrefix(path, "/api/tasks/") {
+		for _, suffix := range apiLongBodySuffixes {
+			if strings.HasSuffix(path, suffix) {
+				return true
+			}
+		}
+		if strings.Contains(path, "/reverse/uploads/") {
+			return true
+		}
+	}
+	return false
+}
+
 // withAPIReadDeadline 给 /api 请求设置整体读限时。放在 requireAuth 外层：限时
 // 与鉴权无关，未鉴权端点（auth/*、health）同样要被兜住。
 func withAPIReadDeadline(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		deadline := apiReadDeadline
-		for _, p := range apiLongBodyPrefixes {
-			if strings.HasPrefix(r.URL.Path, p) {
-				deadline = apiLongReadDeadline
-				break
-			}
+		if isLongBodyPath(r.URL.Path) {
+			deadline = apiLongReadDeadline
 		}
 		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(deadline))
 		h.ServeHTTP(w, r)

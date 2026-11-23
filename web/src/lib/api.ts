@@ -54,6 +54,7 @@ import type {
   InstallBatchResult,
   InstallJob,
   Insights,
+  ReverseChunkInit,
   ReverseDecompiled,
   ReverseDecompileResult,
   ReverseSample,
@@ -832,6 +833,41 @@ export const api = {
     });
     if (!r.ok) throw new Error(`上传失败: ${r.status} ${await r.text()}`);
     return r.json() as Promise<ReverseSampleDetail>;
+  },
+  // 大样本分片上传：每片 16MB，绕开 Cloudflare 的单请求体限制。
+  reverseUploadChunked: async (taskId: string, file: File, onProgress?: (sent: number) => void) => {
+    const token = getToken();
+    const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+    const base = `/api/tasks/${encodeURIComponent(taskId)}/reverse/uploads`;
+    const initRes = await fetch(base, {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, size: file.size }),
+    });
+    if (!initRes.ok) throw new Error(`初始化分片上传失败: ${initRes.status} ${await initRes.text()}`);
+    const init = (await initRes.json()) as ReverseChunkInit;
+    try {
+      let sent = 0;
+      for (let index = 0, offset = 0; offset < file.size; index++, offset += init.chunk_size) {
+        const blob = file.slice(offset, Math.min(offset + init.chunk_size, file.size));
+        const res = await fetch(`${base}/${init.upload_id}/chunks/${index}`, {
+          method: "PUT",
+          headers: { ...authHeaders, "Content-Type": "application/octet-stream" },
+          body: blob,
+        });
+        if (!res.ok) {
+          throw new Error(`上传第 ${index + 1}/${init.chunk_count} 片失败: ${res.status} ${await res.text()}`);
+        }
+        sent += blob.size;
+        onProgress?.(sent);
+      }
+      const done = await fetch(`${base}/${init.upload_id}/complete`, { method: "POST", headers: authHeaders });
+      if (!done.ok) throw new Error(`合并分片失败: ${done.status} ${await done.text()}`);
+      return (await done.json()) as ReverseSampleDetail;
+    } catch (e) {
+      void fetch(`${base}/${init.upload_id}`, { method: "DELETE", headers: authHeaders }).catch(() => {});
+      throw e;
+    }
   },
   reverseAnalyze: (taskId: string, sampleId: number) =>
     post<ReverseSampleDetail>(`/tasks/${encodeURIComponent(taskId)}/reverse/samples/${sampleId}/analyze`, {}),
