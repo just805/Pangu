@@ -139,6 +139,13 @@ function getToken(): string | null {
   return auth.getToken();
 }
 
+// httpStatusError 携带 HTTP 状态码，便于上层区分 413 等代理层错误。
+function httpStatusError(prefix: string, status: number, body: string): Error & { status: number } {
+  const err = new Error(`${prefix}: ${status} ${body}`) as Error & { status: number };
+  err.status = status;
+  return err;
+}
+
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   // Mock handler 按需加载:handler 静态引着 242KB 的 demo 数据集(data.ts),无条件
   // import 会把它拖进首屏主包——生产构建(NEXT_PUBLIC_MOCK 未设)白白付出体积。
@@ -831,7 +838,7 @@ export const api = {
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: fd,
     });
-    if (!r.ok) throw new Error(`上传失败: ${r.status} ${await r.text()}`);
+    if (!r.ok) throw httpStatusError("上传失败", r.status, await r.text());
     return r.json() as Promise<ReverseSampleDetail>;
   },
   // 大样本分片上传：每片 16MB，绕开 Cloudflare 的单请求体限制。
@@ -844,7 +851,7 @@ export const api = {
       headers: { ...authHeaders, "Content-Type": "application/json" },
       body: JSON.stringify({ filename: file.name, size: file.size }),
     });
-    if (!initRes.ok) throw new Error(`初始化分片上传失败: ${initRes.status} ${await initRes.text()}`);
+    if (!initRes.ok) throw httpStatusError("初始化分片上传失败", initRes.status, await initRes.text());
     const init = (await initRes.json()) as ReverseChunkInit;
     try {
       let sent = 0;
@@ -856,13 +863,13 @@ export const api = {
           body: blob,
         });
         if (!res.ok) {
-          throw new Error(`上传第 ${index + 1}/${init.chunk_count} 片失败: ${res.status} ${await res.text()}`);
+          throw httpStatusError(`上传第 ${index + 1}/${init.chunk_count} 片失败`, res.status, await res.text());
         }
         sent += blob.size;
         onProgress?.(sent);
       }
       const done = await fetch(`${base}/${init.upload_id}/complete`, { method: "POST", headers: authHeaders });
-      if (!done.ok) throw new Error(`合并分片失败: ${done.status} ${await done.text()}`);
+      if (!done.ok) throw httpStatusError("合并分片失败", done.status, await done.text());
       return (await done.json()) as ReverseSampleDetail;
     } catch (e) {
       void fetch(`${base}/${init.upload_id}`, { method: "DELETE", headers: authHeaders }).catch(() => {});

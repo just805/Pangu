@@ -18,6 +18,18 @@ const MAX_SAMPLE_BYTES = 512 * 1024 * 1024;
 // 超过该阈值改走分片上传：单片 16MB，低于 Cloudflare 各档位单请求体限制。
 const CHUNK_UPLOAD_THRESHOLD = 80 * 1024 * 1024;
 
+// 代理层（Cloudflare/Nginx）的 413 响应体是 HTML，不直接展示给用户。
+function uploadErrorMessage(e: unknown): string {
+  const err = e as Error & { status?: number };
+  if (err.status === 413) {
+    return "上传被 Cloudflare/反向代理拒绝（413 Payload Too Large），分片上传也未通过，请检查代理的请求体限制。";
+  }
+  if (typeof err.status === "number") {
+    return `上传失败（HTTP ${err.status}）`;
+  }
+  return err.message || "上传失败";
+}
+
 const kindCN: Record<string, string> = {
   pe: "Windows PE",
   "pe-invalid": "PE（解析失败）",
@@ -235,12 +247,28 @@ export function ReverseTab({ taskId }: { taskId: string }) {
     setUploadProgress(file.size > CHUNK_UPLOAD_THRESHOLD ? 0 : null);
     setError("");
     try {
-      const d =
-        file.size > CHUNK_UPLOAD_THRESHOLD
-          ? await api.reverseUploadChunked(taskId, file, (sent) =>
-              setUploadProgress(Math.min(100, Math.round((sent / file.size) * 100))),
-            )
-          : await api.reverseUpload(taskId, file);
+      const runChunked = async () => {
+        setUploadProgress(0);
+        return api.reverseUploadChunked(taskId, file, (sent) =>
+          setUploadProgress(Math.min(100, Math.round((sent / file.size) * 100))),
+        );
+      };
+      let d: ReverseSampleDetail;
+      if (file.size > CHUNK_UPLOAD_THRESHOLD) {
+        d = await runChunked();
+      } else {
+        try {
+          d = await api.reverseUpload(taskId, file);
+        } catch (e) {
+          // 兜底：Cloudflare/反代可能把阈值压得比我们预期更低，413 时自动改分片。
+          if ((e as { status?: number }).status === 413) {
+            toast.info("单请求上传被代理拒绝，自动切换分片上传…");
+            d = await runChunked();
+          } else {
+            throw e;
+          }
+        }
+      }
       const analyzing = d.sample.status === "analyzing";
       if (analyzing) {
         toast.info(`已上传 ${d.sample.filename}，正在后台分析…`);
@@ -257,7 +285,7 @@ export function ReverseTab({ taskId }: { taskId: string }) {
         void loadDecompiled(d.sample.id);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "上传失败";
+      const msg = uploadErrorMessage(err);
       setError(msg);
       toast.error(msg);
     } finally {
