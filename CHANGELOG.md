@@ -2,6 +2,22 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.17] - 2026-11-23
+
+### 修复（建任务附件上传受 Cloudflare 限制）
+
+- 建任务描述旁的「上传文件」实际走 `/api/chat/upload`（单请求 128MB），大文件会被
+  Cloudflare 413 拒绝。新增附件分片上传：16MB/片、上限 512MB，合并后按原命名规则
+  落盘；前端超过 80MB 自动分片并显示「上传 xx%」进度。
+- 单请求上传遇到 413 时自动回退逐文件分片；413 不再展示 Cloudflare 原始 HTML。
+- 分片会话 24 小时未完成自动清理；同名附件自动编号，不覆盖已有文件。
+
+### 验证
+
+- `go build ./...`、`go vet ./server/`；
+- `go test ./server -run "TestSaveMergedUnique|TestIsLongBodyPath|TestReverseChunkHelpers" -count=1`；
+- `npx tsc --noEmit`、`NEXT_EXPORT=1 npx next build`（36 个路由静态导出）。
+
 ## [0.1.16] - 2026-11-23
 
 ### 修复（大样本上传 413 兜底）
