@@ -2,6 +2,22 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.13] - 2026-11-23
+
+### 新增（客户端/桌面逆向任务模板）
+
+- 内置 Playbook 新增「Playbook：客户端/桌面程序逆向（Windows PE · Electron）」：
+  样本 triage → 敏感信息/字符串 → 反编译或 Ghidra 伪代码 → 接口与凭据提取 →
+  授权域名内服务端验证 → 留证与报告；明确样本只读、绝不执行及授权边界。
+- 模板种子增加 v2 独立批次：v1 已完成的存量实例升级后按名补种新模板，
+  不重跑 v1、不覆盖用户改过的同名模板、不复活已删除模板。
+
+### 验证
+
+- `go build ./...`、`go vet ./db/`；
+- `go test ./db/ -run "TestBuiltinPlaybooksCatalog|TestSeedBuiltinTaskPlaybooks"`：
+  目录结构测试通过；种子测试需 PostgreSQL，本机无实例时自动跳过。
+
 ## [0.1.12] - 2026-11-23
 
 ### 新增（客户端/二进制逆向 P0-P0c）
