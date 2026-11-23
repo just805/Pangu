@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { useRouter } from "next/navigation";
 
-import { AlertTriangle, ShieldHalf } from "lucide-react";
+import { AlertTriangle, ArrowRight, Eye, EyeOff, LockKeyhole, ShieldCheck, ShieldHalf } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -30,6 +30,7 @@ export default function LoginPage() {
   const [termsOpen, setTermsOpen] = useState(false);
   const [readToEnd, setReadToEnd] = useState(false);
   const [focused, setFocused] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const termsBodyRef = useRef<HTMLDivElement>(null);
 
   function handleTermsScroll() {
@@ -121,138 +122,181 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden p-6">
-      {/* 背景：双层动画光晕 + 细网格 + 底部渐隐 */}
+    <div className="relative flex min-h-dvh items-center justify-center overflow-hidden p-4 sm:p-6">
+      {/* 背景：细网格 + 双色光晕，全部内联，无外部资源 */}
       <div aria-hidden className="pointer-events-none absolute inset-0">
         <div className="absolute inset-0 bg-background" />
         <div
-          className="absolute inset-0 opacity-[0.18]"
+          className="absolute inset-0 opacity-[0.16]"
           style={{
             backgroundImage:
               "linear-gradient(to right, hsl(var(--border)) 1px, transparent 1px), linear-gradient(to bottom, hsl(var(--border)) 1px, transparent 1px)",
-            backgroundSize: "48px 48px",
-            maskImage: "radial-gradient(ellipse 75% 65% at 50% 40%, black 20%, transparent 78%)",
-            WebkitMaskImage: "radial-gradient(ellipse 75% 65% at 50% 40%, black 20%, transparent 78%)",
+            backgroundSize: "52px 52px",
+            maskImage: "radial-gradient(ellipse 70% 60% at 50% 45%, black 15%, transparent 75%)",
+            WebkitMaskImage: "radial-gradient(ellipse 70% 60% at 50% 45%, black 15%, transparent 75%)",
           }}
         />
         <div
-          className="absolute -top-[30%] left-1/2 h-[60vh] w-[80vw] -translate-x-1/2 rounded-full opacity-[0.07]"
-          style={{ background: "radial-gradient(ellipse, hsl(35 90% 55%) 0%, transparent 70%)" }}
-        />
-        <div
-          className="absolute -bottom-[20%] left-1/2 h-[50vh] w-[70vw] -translate-x-1/2 rounded-full opacity-[0.05]"
-          style={{ background: "radial-gradient(ellipse, hsl(210 80% 50%) 0%, transparent 70%)" }}
-        />
-        <div
-          className="absolute left-1/2 top-1/2 h-[80vh] w-[60vw] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-[0.04]"
+          className="absolute -top-[35%] left-[60%] h-[70vh] w-[70vw] -translate-x-1/2 rounded-full opacity-[0.08]"
           style={{ background: "radial-gradient(ellipse, hsl(var(--primary)) 0%, transparent 70%)" }}
+        />
+        <div
+          className="absolute -bottom-[30%] left-[35%] h-[60vh] w-[60vw] -translate-x-1/2 rounded-full opacity-[0.06]"
+          style={{ background: "radial-gradient(ellipse, hsl(210 90% 55%) 0%, transparent 70%)" }}
         />
       </div>
 
-      <div className="relative w-full max-w-sm animate-in fade-in slide-in-from-bottom-6 duration-500">
-        <div className="rounded-2xl border bg-card/80 p-8 shadow-xl backdrop-blur-md">
-          <div className="mb-8 flex flex-col items-center gap-4 text-center">
-            <div className="relative">
+      <div className="relative w-full max-w-4xl animate-in fade-in slide-in-from-bottom-6 duration-700">
+        <div className="grid overflow-hidden rounded-3xl border bg-card/85 shadow-2xl backdrop-blur-xl lg:grid-cols-[1.05fr_1fr]">
+          {/* 左侧抽象安全图形：内联绘制，不引用独立图片资源 */}
+          <div className="relative hidden flex-col justify-between overflow-hidden border-r bg-linear-to-br from-primary/10 via-background to-background p-10 lg:flex">
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0 flex items-center justify-center overflow-hidden"
+            >
+              <span className="select-none font-semibold text-[9rem] text-primary/[0.04] tracking-[0.18em]">盘古</span>
+            </div>
+            <BrandMark />
+
+            <div className="relative flex flex-1 items-center justify-center py-10">
+              <div className="absolute size-72 rounded-full border border-primary/10" />
+              <div className="absolute size-52 rounded-full border border-primary/15" />
+              <div className="absolute size-36 rounded-full border border-primary/20" />
               <div
                 aria-hidden
-                className="absolute -inset-2 rounded-2xl bg-primary/5 blur-md"
-                style={{ animation: "pulse 4s cubic-bezier(0.4,0,0.6,1) infinite" }}
+                className="absolute size-72 rounded-full border border-primary/10"
+                style={{ animation: "ping 4s cubic-bezier(0,0,0.2,1) infinite" }}
               />
-              <svg
-                aria-hidden
-                viewBox="0 0 48 48"
-                className="relative size-14 text-primary"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <rect x="9" y="20" width="30" height="22" rx="4" />
-                <path d="M17 20v-6a7 7 0 0 1 14 0v6" />
-                <circle cx="24" cy="31" r="2.5" fill="currentColor" stroke="none" />
-              </svg>
+              <div className="relative flex size-24 items-center justify-center rounded-2xl border border-primary/25 bg-primary/10 shadow-lg shadow-primary/10">
+                <ShieldCheck className="size-11 text-primary" />
+              </div>
+              <span className="absolute left-[18%] top-[24%] size-1.5 rounded-full bg-emerald-500/80" />
+              <span className="absolute right-[20%] top-[36%] size-1 rounded-full bg-primary/60" />
+              <span className="absolute bottom-[24%] left-[30%] size-1 rounded-full bg-primary/50" />
             </div>
-            <div>
-              <h1 className="font-semibold text-2xl tracking-tight">控制台登录</h1>
-              <p className="mt-1.5 text-muted-foreground text-sm">仅限授权运维人员访问</p>
+
+            <div className="space-y-2">
+              <div className="font-mono text-[10px] uppercase tracking-[0.32em] text-muted-foreground">
+                Authorized Access Only
+              </div>
+              <p className="font-medium text-base">授权访问 · 全程留痕</p>
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                本入口仅用于授权运维与安全评估，所有操作受审计与拦截策略约束。
+              </p>
             </div>
           </div>
 
-          <form onSubmit={handleSubmit} className="flex flex-col gap-5">
-            <div className="space-y-1.5">
-              <Label htmlFor="username" className="text-muted-foreground text-xs">用户名</Label>
-              <Input
-                id="username"
-                value="PANGU"
-                readOnly
-                className="border-border/60 bg-muted/50 font-mono text-muted-foreground"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="password" className="text-muted-foreground text-xs">密码</Label>
-              <div className="relative">
-                <Input
-                  id="password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  autoFocus
-                  autoComplete="current-password"
-                  onFocus={() => setFocused(true)}
-                  onBlur={() => setFocused(false)}
-                  className="border-border/60 pr-10 transition-shadow duration-200"
-                />
-                <div
-                  aria-hidden
-                  className={`absolute -bottom-px left-1/2 h-px -translate-x-1/2 bg-primary transition-all duration-300 ${
-                    focused ? "w-full opacity-100" : "w-0 opacity-0"
-                  }`}
-                />
+          {/* 右侧登录表单 */}
+          <div className="p-7 sm:p-10">
+            <div className="mb-8">
+              <div className="mb-6 lg:hidden">
+                <BrandMark compact />
               </div>
+              <div className="inline-flex items-center gap-2 rounded-full border bg-muted/40 px-3 py-1 text-[11px] text-muted-foreground">
+                <span className="size-1.5 rounded-full bg-emerald-500" />
+                授权访问
+              </div>
+              <h1 className="mt-4 font-semibold text-2xl tracking-tight">控制台登录</h1>
+              <p className="mt-1.5 text-muted-foreground text-sm">仅限授权运维人员访问</p>
             </div>
-            <div className="flex items-start gap-2">
-              <Checkbox
-                id="agree-terms"
-                checked={agreed}
-                onCheckedChange={(v) => setAgreed(v === true)}
-                className="mt-0.5"
-              />
-              <Label htmlFor="agree-terms" className="font-normal text-muted-foreground text-sm leading-relaxed">
-                我已阅读并同意
-                <button
-                  type="button"
-                  onClick={() => setTermsOpen(true)}
-                  className="mx-0.5 font-medium text-primary underline-offset-4 hover:underline"
-                >
-                  《安全与合规声明》
-                </button>
-              </Label>
-            </div>
-            {error && (
-              <p className="animate-in fade-in slide-in-from-top-1 text-destructive text-sm">{error}</p>
-            )}
-            <Button
-              type="submit"
-              className="h-10 w-full font-medium tracking-wide transition-all duration-200 hover:shadow-md"
-              disabled={loading || !password || !agreed}
-            >
-              {loading ? (
-                <span className="flex items-center gap-2">
-                  <span className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                  登录中…
-                </span>
-              ) : (
-                "登 录"
-              )}
-            </Button>
-          </form>
-        </div>
 
-        <p className="mt-6 text-center text-muted-foreground/60 text-xs">
-          连续登录失败会触发临时锁定
-        </p>
+            <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+              {/* 固定账户不在界面展示；保留隐藏字段以兼容密码管理器 */}
+              <input type="text" name="username" value="PANGU" autoComplete="username" readOnly hidden />
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="password" className="text-muted-foreground text-xs">密码</Label>
+                  <span className="text-[10px] text-muted-foreground/70">区分大小写</span>
+                </div>
+                <div className="relative">
+                  <LockKeyhole className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground/70" />
+                  <Input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="请输入登录密码"
+                    autoFocus
+                    autoComplete="current-password"
+                    onFocus={() => setFocused(true)}
+                    onBlur={() => setFocused(false)}
+                    className="h-11 border-border/60 pr-11 pl-10 transition-shadow duration-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                    className="absolute top-1/2 right-1 flex size-9 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  </button>
+                  <div
+                    aria-hidden
+                    className={`absolute -bottom-px left-1/2 h-px -translate-x-1/2 bg-primary transition-all duration-300 ${
+                      focused ? "w-full opacity-100" : "w-0 opacity-0"
+                    }`}
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2">
+                <Checkbox
+                  id="agree-terms"
+                  checked={agreed}
+                  onCheckedChange={(v) => setAgreed(v === true)}
+                  className="mt-0.5"
+                />
+                <Label htmlFor="agree-terms" className="font-normal text-muted-foreground text-sm leading-relaxed">
+                  我已阅读并同意
+                  <button
+                    type="button"
+                    onClick={() => setTermsOpen(true)}
+                    className="mx-0.5 font-medium text-primary underline-offset-4 hover:underline"
+                  >
+                    《安全与合规声明》
+                  </button>
+                </Label>
+              </div>
+
+              {error && (
+                <p
+                  role="alert"
+                  className="flex animate-in items-start gap-2 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-destructive text-xs leading-relaxed fade-in slide-in-from-top-1"
+                >
+                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                  {error}
+                </p>
+              )}
+
+              <Button
+                type="submit"
+                className="group h-11 w-full bg-linear-to-r from-primary to-primary/85 font-medium tracking-wide shadow-sm transition-all duration-200 hover:shadow-lg hover:brightness-105"
+                disabled={loading || !password || !agreed}
+              >
+                {loading ? (
+                  <span className="flex items-center gap-2">
+                    <span className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                    登录中…
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-2">
+                    登 录
+                    <ArrowRight className="size-4 transition-transform duration-200 group-hover:translate-x-0.5" />
+                  </span>
+                )}
+              </Button>
+            </form>
+
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-2 border-t pt-4 text-[10px] text-muted-foreground">
+              <span>连续登录失败会触发临时锁定</span>
+              <span className="inline-flex items-center gap-1">
+                <ShieldCheck className="size-3.5 text-emerald-500" />
+                凭据仅通过受保护通道传输
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <Dialog open={termsOpen} onOpenChange={setTermsOpen}>
@@ -303,6 +347,24 @@ export default function LoginPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+// 品牌标识：盾牌 + “盘古 / PANGU”。全部内联，避免独立图片资源被测绘。
+function BrandMark({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <div className="flex size-9 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 shadow-sm">
+        <ShieldHalf className="size-4 text-primary" />
+      </div>
+      <div className="leading-tight">
+        <div className="flex items-baseline gap-2">
+          <span className="font-semibold text-base tracking-[0.2em]">盘古</span>
+          <span className="font-mono text-[9px] uppercase tracking-[0.24em] text-muted-foreground">PANGU</span>
+        </div>
+        {compact ? null : <div className="mt-0.5 text-[10px] text-muted-foreground">安全控制台</div>}
+      </div>
     </div>
   );
 }
