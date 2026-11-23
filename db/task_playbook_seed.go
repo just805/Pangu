@@ -119,3 +119,56 @@ func (d *DB) seedBuiltinTaskPlaybooks() error {
 	}
 	return d.SetSetting(flag, "done")
 }
+
+// builtinTaskPlaybooksV2 是 P0c 之后新增的客户端/桌面逆向 Playbook。v1 批次
+// 早已 done 的存量实例不会重跑，所以必须单独开批次按名补种；同名模板已存在
+// （用户改过或删过）时不复活。
+var builtinTaskPlaybooksV2 = []builtinTaskPlaybook{
+	{
+		name:        "Playbook：客户端/桌面程序逆向（Windows PE · Electron）",
+		description: "适用：拿到 exe/dll/安装包或 Electron 桌面客户端。流程：样本 triage→敏感信息/字符串→反编译或 Ghidra 伪代码→接口与凭据提取→授权域名内服务端验证→报告。样本只读不执行。",
+		goal: `对「{{客户端名称/安装包}}」完成客户端与后端的授权安全测试，产出可复现的漏洞报告。**核心思路：静态逆向拿线索，服务端验证出结论；样本只读，绝不执行。**
+
+【授权范围】
+- 以任务描述给出的客户端样本、后端域名/接口为边界；逆向只用于发现接口与凭据，服务端请求只打授权域名。
+- 不绕过付费/版权/授权校验做非测试用途；样本不传播、不上传第三方。
+
+【内部工作流（串行，自行拆解规划）】
+1. 样本登记与 triage：在任务详情「逆向分析」页上传样本，记录 SHA-256、文件类型、架构、签名、节区熵、导入表、加壳/.NET 识别；后续所有结论引用该哈希。
+2. 敏感信息与字符串：查看 triage 的 URL/域名/高价值字符串与「敏感信息候选」；凭据候选全文落 fact（不缩写不掩码），标明来源是二进制还是反编译。
+3. 反编译/伪代码：.NET 走 ILSpy、Electron 走 asar 解包、原生 PE 走 Ghidra 伪代码；重点看认证、加密、网络请求、更新与插件加载相关函数，提取 baseURL、接口路径、签名算法、硬编码 AK/SK/token、内网地址。
+4. 接口与业务梳理：把静态提取的接口与授权范围内的真实流量对照，标出未授权、越权、注入与逻辑风险点。
+5. 服务端验证：只对授权域名做最小验证——未授权访问、越权读取（只证明能读到一条非本人数据）、签名绕过、硬编码凭据有效性；URL/域名先 http_probe 确认存活。
+6. 留证与报告：每条漏洞附最小复现请求/响应、样本 SHA-256 与反编译文件/函数位置；在报告「客户端/二进制分析」章登记样本指纹、反编译状态与敏感信息；给出轮换凭据、移除硬编码、加强服务端鉴权与签名校验的修复建议。
+
+【产出】
+- 客户端指纹与样本哈希清单；硬编码凭据/接口清单（含证据位置）；经服务端验证的漏洞清单（按风险排序，附最小复现）；修复建议。
+
+【边界】
+- 样本只读、绝不执行；动态调试仅在自有测试环境且授权明确时进行；
+- 不批量拉取业务数据、不破坏客户端可用性、不对授权外域名发起请求；
+- 加壳/混淆导致反编译不完整时，记录限制并只基于可验证证据下结论，不臆测。`,
+	},
+}
+
+// seedBuiltinTaskPlaybooksV2 只补种 v2 批次的新增模板，不动 v1 已种/用户改过的内容。
+func (d *DB) seedBuiltinTaskPlaybooksV2() error {
+	const flag = "task_playbooks_v2"
+	if v, _, _ := d.GetSetting(flag); v == "done" {
+		return nil
+	}
+	for _, pb := range builtinTaskPlaybooksV2 {
+		in := TaskTemplateInput{
+			Name:        pb.name,
+			Description: pb.description,
+			Goal:        pb.goal,
+		}
+		if _, err := d.CreateTaskTemplate(in); err != nil {
+			if errors.Is(err, ErrTaskTemplateNameConflict) {
+				continue
+			}
+			return fmt.Errorf("playbook v2 %q: %w", pb.name, err)
+		}
+	}
+	return d.SetSetting(flag, "done")
+}

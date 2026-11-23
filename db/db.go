@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/just805/pangu/config"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx database/sql driver ("pgx")
+	"github.com/just805/pangu/config"
 )
 
 //go:embed schema.sql
@@ -283,6 +283,9 @@ ON CONFLICT (name) DO NOTHING`,
 	}
 	if err := d.seedBuiltinTaskPlaybooks(); err != nil {
 		return fmt.Errorf("seed task playbooks: %w", err)
+	}
+	if err := d.seedBuiltinTaskPlaybooksV2(); err != nil {
+		return fmt.Errorf("seed task playbooks v2: %w", err)
 	}
 	if err := d.seedDefaultInterceptRules(); err != nil {
 		return fmt.Errorf("seed intercept rules: %w", err)
