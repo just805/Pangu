@@ -41,3 +41,20 @@ func truncateUTF8(s string, maxBytes int) string {
 	}
 	return s[:maxBytes]
 }
+
+// normalizeLiteralNewlines 还原被模型写成字面转义（两个字符 "\" + "n"）的换行。
+//
+// agent 有时把 summary/evidence 的换行写成字面 "\n"，导出的 Word 里整段证据
+// 就挤成一个超长段落、页面上还露着 "\n"（用户实测「格式问题严重」的主因之一）。
+// 仅当字面 \n 的数量多于真实换行时才还原，避免误伤 JSON 字符串里的合法转义
+// （与前端 components/evidence-view.tsx 的 normalizeEvidenceText 同口径）。
+func normalizeLiteralNewlines(s string) string {
+	if !strings.Contains(s, `\n`) {
+		return s
+	}
+	literal := strings.Count(s, `\n`)
+	if literal <= strings.Count(s, "\n") {
+		return s
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(s, `\r\n`, "\n"), `\n`, "\n"), `\t`, "\t")
+}

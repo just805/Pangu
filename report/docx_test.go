@@ -124,9 +124,14 @@ func TestBuildTaskDocxAndFindingDocx(t *testing.T) {
 		}
 	}
 	for _, frag := range []string{
-		"影响资产:10.0.0.5, admin.example.com", // A8 可读名
-		"最近复测:已复现",                         // A9 复测小节
-		"<w:color w:val=\"C00000\"/>",      // A2 critical 标题着色
+		// A8 可读名：元信息行改成「标签：值」两个 run（去首行缩进的紧凑排版）
+		"影响资产：",
+		"10.0.0.5, admin.example.com",
+		"最近复测:已复现", // A9 复测小节
+		// 表格改为固定版心宽 + 表头跨页重复
+		`<w:tblLayout w:type="fixed"/>`,
+		"<w:tblHeader/>",
+		// 图注不再重复「图：」前缀（Image 自带「图 N：」）
 	} {
 		if !strings.Contains(doc, frag) {
 			t.Errorf("document.xml missing %q", frag)

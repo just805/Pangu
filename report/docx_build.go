@@ -113,7 +113,8 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 	// ── 执行摘要（A13）：管理层风险结论，LLM 聚合 + 可人工修订；空则省略 ──
 	if strings.TrimSpace(in.ExecSummary) != "" {
 		d.H1("执行摘要")
-		for _, line := range strings.Split(strings.ReplaceAll(in.ExecSummary, "\r\n", "\n"), "\n") {
+		summary := strings.ReplaceAll(normalizeLiteralNewlines(in.ExecSummary), "\r\n", "\n")
+		for _, line := range strings.Split(summary, "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
 				continue
@@ -200,8 +201,9 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 	d.H2("测试窗口")
 	if in.TestWindow != "" {
 		d.P("测试执行窗口:" + in.TestWindow)
+	} else {
+		d.P("报告生成时间:" + FormatTimeUTC(in.GeneratedAt))
 	}
-	d.P("报告生成时间:" + FormatTimeUTC(in.GeneratedAt))
 	if len(in.AssetCounts) > 0 {
 		d.H2("测试范围")
 		d.P("本次测试覆盖以下资产类型（明细见附录 A）:")
@@ -230,31 +232,28 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 	for gi, g := range groups {
 		d.H2(fmt.Sprintf("3.%d %s(共 %d 条)", gi+1, g.class, len(g.items)))
 		for fi, f := range g.items {
-			// 严重度着色（A2）：标题颜色随级别，一眼分诊
-			if hex := SeverityHex(f.Severity); hex != "" {
-				d.headingColored(fmt.Sprintf("3.%d.%d [%s] %s", gi+1, fi+1, SeverityCN(f.Severity), findingTitle(f)), 3, hex)
-			} else {
-				d.H3(fmt.Sprintf("3.%d.%d [%s] %s", gi+1, fi+1, SeverityCN(f.Severity), findingTitle(f)))
-			}
-			d.P(fmt.Sprintf("漏洞类别:%s", nz(f.VulnClass, "未分类")))
+			// 漏洞标题保持公文黑体正文色。此前按严重度染成橙/红色，Word 里像
+			// 超链接或报错提示，正式报告观感很差；严重度已在方括号里标明。
+			d.H3(fmt.Sprintf("3.%d.%d [%s] %s", gi+1, fi+1, SeverityCN(f.Severity), findingTitle(f)))
+			d.Meta("漏洞类别", nz(f.VulnClass, "未分类"))
 			if len(f.AssetIDs) > 0 {
-				d.P(fmt.Sprintf("影响资产:%s", assetNames(f.AssetIDs, in.AssetNames)))
+				d.Meta("影响资产", assetNames(f.AssetIDs, in.AssetNames))
 			}
-			d.P(fmt.Sprintf("发现时间:%s · 发现者:%s", FormatTimeUTC(f.CreatedAt), nz(f.Worker, "-")))
-			if strings.TrimSpace(f.Summary) != "" {
+			d.Meta("发现时间", FormatTimeUTC(f.CreatedAt)+" · 发现者:"+nz(f.Worker, "-"))
+			if summary := strings.TrimSpace(normalizeLiteralNewlines(f.Summary)); summary != "" {
 				d.H4("摘要")
-				d.P(f.Summary)
+				d.P(summary)
 			}
 			// 漏洞情报富化（A11）：已知漏洞类自动带 CVSS/KEV/官方描述。
 			if md := enrichmentMarkdown(in, f); md != "" {
 				d.H4("漏洞情报（平台情报库自动富化）")
 				writeMarkdownish(d, md)
 			}
-			if body := strings.TrimSpace(f.Report); body != "" {
+			if body := strings.TrimSpace(normalizeLiteralNewlines(f.Report)); body != "" {
 				d.H4("详细报告")
 				writeMarkdownish(d, body)
 			}
-			if ev := strings.TrimSpace(f.Evidence); ev != "" {
+			if ev := strings.TrimSpace(normalizeLiteralNewlines(f.Evidence)); ev != "" {
 				d.H4("证据 / PoC")
 				d.Code(ev)
 			}
@@ -615,6 +614,7 @@ func BuildFindingDocx(in FindingDocxInput) *Docx {
 // - '**加粗**' → 富文本 run（段落与列表项都支持）
 // 其余按段落。不追求 Markdown 完整性——报告正文是模型产物，覆盖常用子集即可。
 func writeMarkdownish(d *Docx, md string) {
+	md = normalizeLiteralNewlines(md)
 	lines := strings.Split(strings.ReplaceAll(md, "\r\n", "\n"), "\n")
 	inCode := false
 	// 表格块收集：连续的 | 开头行

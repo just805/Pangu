@@ -218,30 +218,129 @@ func (d *Docx) Table(header []string, rows [][]string) {
 	d.TableFills(header, rows, nil)
 }
 
+// pageContentWidthTwips 版心宽度：A4 宽 11906 减左右页边距 1474/1587。
+const pageContentWidthTwips = 8845
+
+// visualWidth 估算一段文字的显示宽度（全角按 2、半角按 1），用于分配列宽。
+func visualWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		if r > 0x7F {
+			w += 2
+		} else {
+			w++
+		}
+	}
+	return w
+}
+
+// columnWidths 按各列内容的显示宽度分配版心宽度。
+//
+// 原来是 tblW=auto + 每列固定 1800：Word 自动布局会把「状态」「验收标准」这类
+// 中文短列压成一个字宽竖排，长文本列则独占版面（用户实测导出报告表格严重变形）。
+// 现在改成固定布局：宽度按内容估算占比，短列下限 700 twips（约 1.2cm），
+// 总宽严格等于版心宽，表格不再缩在左侧半栏。
+func columnWidths(header []string, rows [][]string) []int {
+	n := len(header)
+	widths := make([]int, n)
+	if n == 0 {
+		return widths
+	}
+	const minCol = 700
+	if n*minCol >= pageContentWidthTwips {
+		// 列太多，均分即可，min 无意义。
+		base := pageContentWidthTwips / n
+		for i := range widths {
+			widths[i] = base
+		}
+		widths[n-1] += pageContentWidthTwips - base*n
+		return widths
+	}
+	weights := make([]int, n)
+	sum := 0
+	for i := range header {
+		w := visualWidth(header[i])
+		if w < 6 {
+			w = 6
+		}
+		limit := len(rows)
+		if limit > 40 { // 采样前 40 行，长表不逐个算
+			limit = 40
+		}
+		for ri := 0; ri < limit; ri++ {
+			if i < len(rows[ri]) {
+				if cw := visualWidth(rows[ri][i]); cw > w {
+					w = cw
+				}
+			}
+		}
+		// 超长文本做压缩：否则一条 200 字的目标描述会把整行撑满。
+		if w > 40 {
+			w = 40 + (w-40)/4
+		}
+		weights[i] = w
+		sum += w
+	}
+	used := 0
+	for i := range widths {
+		w := pageContentWidthTwips * weights[i] / sum
+		if w < minCol {
+			w = minCol
+		}
+		widths[i] = w
+		used += w
+	}
+	// 舍入/下限造成的差额补到最宽列，保证总和正好铺满版心。
+	widest := 0
+	for i := range widths {
+		if widths[i] > widths[widest] {
+			widest = i
+		}
+	}
+	widths[widest] += pageContentWidthTwips - used
+	return widths
+}
+
 // TableFills 带行底色的表格：fills[i] 是第 i 行数据的底色 hex（空串或越界 = 无底色）。
 // 严重度分布表按严重度着色用（A2）。
 func (d *Docx) TableFills(header []string, rows [][]string, fills []string) {
+	if len(header) == 0 {
+		return
+	}
+	widths := columnWidths(header, rows)
 	var b strings.Builder
-	b.WriteString(`<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid>`)
-	for range header {
-		b.WriteString(`<w:gridCol w:w="1800"/>`)
+	// fixed 布局 + 显式 tcW：否则 Word 按内容自适应，中文短列被压成竖排单字。
+	b.WriteString(`<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="` +
+		fmt.Sprint(pageContentWidthTwips) + `" w:type="dxa"/><w:tblLayout w:type="fixed"/>` +
+		`<w:tblCellMar><w:top w:w="40" w:type="dxa"/><w:left w:w="80" w:type="dxa"/>` +
+		`<w:bottom w:w="40" w:type="dxa"/><w:right w:w="80" w:type="dxa"/></w:tblCellMar>` +
+		`<w:jc w:val="center"/></w:tblPr><w:tblGrid>`)
+	for _, w := range widths {
+		fmt.Fprintf(&b, `<w:gridCol w:w="%d"/>`, w)
 	}
 	b.WriteString(`</w:tblGrid>`)
 	// 单元格文字 10pt：正文字号升到三号后，表格若继承会巨大变形
-	cell := func(text, fill string) {
-		sty := ""
+	cell := func(text, fill string, width int, bold bool) {
+		var sty strings.Builder
+		fmt.Fprintf(&sty, `<w:tcW w:w="%d" w:type="dxa"/><w:vAlign w:val="center"/>`, width)
 		if fill != "" {
-			sty = fmt.Sprintf(`<w:shd w:val="clear" w:fill="%s"/>`, fill)
+			fmt.Fprintf(&sty, `<w:shd w:val="clear" w:fill="%s"/>`, fill)
 		}
-		fmt.Fprintf(&b, `<w:tc><w:tcPr>%s</w:tcPr><w:p><w:pPr><w:spacing w:line="240" w:lineRule="auto"/><w:ind w:firstLine="0"/></w:pPr><w:r><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><w:t xml:space="preserve">%s</w:t></w:r></w:p></w:tc>`, sty, esc(text))
+		brpr := ""
+		if bold {
+			brpr = `<w:b/>`
+		}
+		fmt.Fprintf(&b, `<w:tc><w:tcPr>%s</w:tcPr><w:p><w:pPr><w:spacing w:line="240" w:lineRule="auto"/><w:ind w:firstLine="0"/></w:pPr><w:r><w:rPr>%s<w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><w:t xml:space="preserve">%s</w:t></w:r></w:p></w:tc>`,
+			sty.String(), brpr, esc(text))
 	}
-	b.WriteString(`<w:tr>`)
-	for _, h := range header {
-		cell(h, "DEEAF6")
+	// 表头行：跨页自动重复（tblHeader），行内不拆断（cantSplit）。
+	b.WriteString(`<w:tr><w:trPr><w:tblHeader/><w:cantSplit/></w:trPr>`)
+	for i, h := range header {
+		cell(h, "DEEAF6", widths[i], true)
 	}
 	b.WriteString(`</w:tr>`)
 	for ri, r := range rows {
-		b.WriteString(`<w:tr>`)
+		b.WriteString(`<w:tr><w:trPr><w:cantSplit/></w:trPr>`)
 		fill := ""
 		if ri < len(fills) {
 			fill = fills[ri]
@@ -251,7 +350,7 @@ func (d *Docx) TableFills(header []string, rows [][]string, fills []string) {
 			if i < len(r) {
 				v = r[i]
 			}
-			cell(v, fill)
+			cell(v, fill, widths[i], false)
 		}
 		b.WriteString(`</w:tr>`)
 	}
@@ -259,6 +358,15 @@ func (d *Docx) TableFills(header []string, rows [][]string, fills []string) {
 	// OOXML 要求表格后跟一个空段落
 	b.WriteString(`<w:p/>`)
 	d.buf.WriteString(b.String())
+}
+
+// Meta 报告元信息行（漏洞类别/影响资产/发现时间）：无首行缩进、五号灰标签，
+// 否则会被 Normal 的「首行缩进 2 字符 + 两端对齐」排成散文，和正文混成一片。
+func (d *Docx) Meta(label, value string) {
+	fmt.Fprintf(&d.buf, `<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="320" w:lineRule="exact"/><w:ind w:firstLine="0"/><w:jc w:val="left"/></w:pPr>`+
+		`<w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr><w:t xml:space="preserve">%s：</w:t></w:r>`+
+		`<w:r><w:rPr><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr><w:t xml:space="preserve">%s</w:t></w:r></w:p>`,
+		esc(label), esc(value))
 }
 
 // PageBreak 分页。

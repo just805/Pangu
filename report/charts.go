@@ -7,6 +7,7 @@ package report
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 
@@ -89,8 +90,10 @@ func renderBarChart(title string, bars []chart.Value) ([]byte, error) {
 	}
 	ts := chart.Shown()
 	ts.Font = f
+	ts.FontSize = 16
 	xs := chart.Shown()
 	xs.Font = f
+	xs.FontSize = 12
 	// 全等值（或单条）时默认数据范围为 0 → 报错；显式给 Y 轴范围（0 到 max+1）。
 	maxV := 0.0
 	for _, v := range bars {
@@ -100,20 +103,46 @@ func renderBarChart(title string, bars []chart.Value) ([]byte, error) {
 	}
 	ys := chart.Shown()
 	ys.Font = f
+	ys.FontSize = 11
+	// Y 轴整数等距刻度：默认连续轴会给出 14/11/8/6/3/0 这种不整齐的刻度。
+	step := math.Max(1, math.Ceil(maxV/4))
+	var yticks []chart.Tick
+	for v := 0.0; v <= maxV+0.001; v += step {
+		yticks = append(yticks, chart.Tick{Value: v, Label: fmt.Sprintf("%.0f", v)})
+	}
+	// 柱宽原来写死 48、间距 24：只有两根柱时只占左侧 ~150px，右边大片空白，
+	// Y 轴刻度被挤到最右侧（用户实测「图表错位」）。改为按柱数铺满版心宽度。
+	const (
+		chartWidth  = 760
+		chartHeight = 300
+	)
+	usable := chartWidth - 110 // 左右留白 + 右侧 Y 轴刻度区
+	spacing := usable / (len(bars) * 3)
+	if spacing < 12 {
+		spacing = 12
+	}
 	var buf bytes.Buffer
 	bc := chart.BarChart{
 		Title:      title,
 		TitleStyle: ts,
 		Font:       f,
-		Width:      720,
-		Height:     360,
-		BarWidth:   48,
-		BarSpacing: 24,
+		Width:      chartWidth,
+		Height:     chartHeight,
+		BarWidth:   spacing * 2,
+		BarSpacing: spacing,
 		Bars:       bars,
 		XAxis:      xs,
 		YAxis: chart.YAxis{
 			Style: ys,
 			Range: &chart.ContinuousRange{Min: 0, Max: maxV + 1},
+			Ticks: yticks,
+			// 计数轴不要小数点：默认 FloatValueFormatter 会渲染成「2.00」。
+			ValueFormatter: chart.ValueFormatter(func(v interface{}) string {
+				if fv, ok := v.(float64); ok {
+					return fmt.Sprintf("%.0f", fv)
+				}
+				return fmt.Sprint(v)
+			}),
 		},
 	}
 	if err := bc.Render(chart.PNG, &buf); err != nil {
@@ -125,5 +154,6 @@ func renderBarChart(title string, bars []chart.Value) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// chartCaption docx 图片题注格式。
-func chartCaption(s string) string { return fmt.Sprintf("图：%s", s) }
+// chartCaption 返回题注正文。Image 自身会加「图 N：」序号前缀，这里不能再
+// 带「图：」，否则渲染成「图 1：图：漏洞严重度分布」（用户实测）。
+func chartCaption(s string) string { return s }
