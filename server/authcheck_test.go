@@ -158,11 +158,15 @@ func TestHTTPToolProxyTransport(t *testing.T) {
 	if got := getProxy(tr); got != "socks5://10.0.0.9:1080" {
 		t.Fatalf("explicit scheme proxy = %q", got)
 	}
-	// 平台未配置代理 → nil（直连），与旧行为一致。
+	// 平台未配置代理：普通目标必须直连。隐藏服务默认启用，transport 可能非 nil
+	//（.onion/.i2p 需要专用上游），但普通 host 的 Proxy 必须返回 nil。
 	if err := m.SetGlobalProxy(""); err != nil {
 		t.Fatalf("SetGlobalProxy clear: %v", err)
 	}
 	if tr := s.httpProxyTransport(httpExec{}); tr != nil {
-		t.Fatal("no proxy configured must yield nil transport (direct)")
+		req, _ := http.NewRequest(http.MethodGet, "http://example.com/", nil)
+		if u, err := tr.Proxy(req); err != nil || u != nil {
+			t.Fatalf("no platform proxy: normal host must be direct, got %v (%v)", u, err)
+		}
 	}
 }

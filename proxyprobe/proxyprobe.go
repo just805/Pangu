@@ -328,6 +328,11 @@ func ConfigureTransport(tr *http.Transport, platform string, hs HiddenProxies) e
 
 	// HTTP 型代理交给 net/http 的 Proxy；SOCKS 型交给 DialContext。
 	tr.Proxy = func(req *http.Request) (*url.URL, error) {
+		// 无目标 host（测试或极端调用）时回落平台出口；真实请求永远带 URL，
+		// 不会走这一分支。返回 socks 地址交给 DialContext 处理即可。
+		if req == nil || req.URL == nil {
+			return platU, nil
+		}
 		switch HiddenKind(req.URL.Host) {
 		case "tor":
 			if torU != nil && !isSocksURL(torU) {
