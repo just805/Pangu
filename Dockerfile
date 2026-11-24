@@ -82,33 +82,40 @@ RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@late
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-# 预编译好的对应架构二进制（dist/amd64/pangu 或 dist/arm64/pangu）
+# 内置渗透工具与字典（对齐 install.sh --with-tools；详见 docker/install-tools.sh）：
+# projectdiscovery 全家桶 / gobuster / gitleaks / chisel / amass / dalfox /
+# feroxbuster + pip 组（wafw00f/netexec/semgrep/pwntools）+ SecLists → /opt/SecLists
+COPY docker/install-tools.sh /tmp/install-tools.sh
+RUN bash /tmp/install-tools.sh && rm -f /tmp/install-tools.sh
+# uv：MCP 预设「FOFA 资产测绘」用它拉起 Python stdio server
+RUN python3 -m pip install --no-cache-dir --quiet uv && uv --version
+# 注：catalog 全量 90 项的补齐**不在构建期做**（会把镜像再撑大 1–2GB、构建时间翻倍）。
+# 改为容器首次启动时后台预装（见 docker/docker-entrypoint.sh）：主服务不被阻塞，
+# 安装日志在 data/tools-preinstall.log，「宿主环境」页实时反映进度。
+# 已装的会跳过（幂等）；要禁用后台预装：environment: PANGU_PREINSTALL_TOOLS=0。
+
+# ── 以下按「变化频率从低到高」排列：每次发版只有最后几层失效 ──
+# 历史坑：pangu 二进制原本 COPY 在工具层之前，导致它一变、后面所有几百 MB 的
+# 工具层全部重新下载——每次升级都要拉 ~727MB（用户实测「升级怎么这么慢」）。
+# 现在二进制与启动脚本放到最后，升级只需拉二进制层（约 60–120MB）。
+#
+# 平台自带的 MCP 服务器（FOFA 资产测绘等）；相对路径由 start.sh 的 cwd(/app) 解析
+COPY mcp-servers/ /app/mcp-servers/
+# 公文字体：docx→PDF 渲染需要（install.sh 二进制形态从 raw 下载；镜像直接 COPY 仓库内文件）
+COPY report/fonts/ /usr/share/fonts/gongwen/
+RUN fc-cache -f /usr/share/fonts/gongwen >/dev/null 2>&1 || true
+# skills：改 skill 无需重建镜像（compose 里也可 bind mount 覆盖）
+COPY skills/ /app/skills/
+# 预编译好的对应架构二进制（dist/amd64/pangu 或 dist/arm64/pangu）——每版必变
 COPY dist/${TARGETARCH}/pangu /app/pangu
 # 特权安装助手：容器内以 root 常驻 unix socket，「宿主环境」页可运行期装/重装工具；
-# 构建期也用它把 catalog 缺失项一次性装齐（开箱即用，见下方 install-all）。
+# 首次启动时由 entrypoint 调 -install-all 后台预装（见 docker/docker-entrypoint.sh）。
 COPY dist/${TARGETARCH}/pangu-hostd /app/pangu-hostd
 # 守护启动脚本：进程退出后按退出码决定是否重新拉起，页面一键更新靠它完成换装。
 # 它同时负责把 SIGTERM 转发给 pangu —— docker stop 只把信号发给 PID 1，
 # 不转发的话 pangu 收不到、做不了优雅关闭，10 秒后被 SIGKILL 硬杀。
 COPY start.sh /app/start.sh
 RUN chmod +x /app/pangu /app/pangu-hostd /app/start.sh
-COPY skills/ /app/skills/
-# 公文字体：docx→PDF 渲染需要（install.sh 二进制形态从 raw 下载；镜像直接 COPY 仓库内文件）
-COPY report/fonts/ /usr/share/fonts/gongwen/
-RUN fc-cache -f /usr/share/fonts/gongwen >/dev/null 2>&1 || true
-# 内置渗透工具与字典（对齐 install.sh --with-tools；详见 docker/install-tools.sh）：
-# projectdiscovery 全家桶 / gobuster / gitleaks / chisel / amass / dalfox /
-# feroxbuster + pip 组（wafw00f/netexec/semgrep/pwntools）+ SecLists → /opt/SecLists
-COPY docker/install-tools.sh /tmp/install-tools.sh
-# 平台自带的 MCP 服务器（FOFA 资产测绘等）；相对路径由 start.sh 的 cwd(/app) 解析
-COPY mcp-servers/ /app/mcp-servers/
-# uv：MCP 预设「FOFA 资产测绘」用它拉起 Python stdio server
-RUN python3 -m pip install --no-cache-dir --quiet uv && uv --version
-RUN bash /tmp/install-tools.sh && rm -f /tmp/install-tools.sh
-# 注：catalog 全量 90 项的补齐**不在构建期做**（会把镜像再撑大 1–2GB、构建时间翻倍）。
-# 改为容器首次启动时后台预装（见 docker/docker-entrypoint.sh）：主服务不被阻塞，
-# 安装日志在 data/tools-preinstall.log，「宿主环境」页实时反映进度。
-# 已装的会跳过（幂等）；要禁用后台预装：environment: PANGU_PREINSTALL_TOOLS=0。
 # entrypoint：先后台拉起 hostd（root 常驻，「宿主环境」页一键装工具），再 exec start.sh
 COPY docker/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh

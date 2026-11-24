@@ -2,6 +2,26 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.20] - 2026-11-24
+
+### 优化（镜像层顺序：升级拉取量从 ~727MB 降到 ~100MB）
+
+- 生成物镜像 Dockerfile 重排层顺序：`pangu` / `pangu-hostd` / `start.sh` /
+  `entrypoint` 原来排在工具层之前，二进制一变，后面几百 MB 的工具层全部失效，
+  每次升级都要重新下载约 727MB。现改为按「变化频率从低到高」排列——apt 工具组、
+  nuclei、Playwright、install-tools、uv 在前，`mcp-servers` / 字体 / `skills`
+  居中，二进制与启动脚本放最后。
+- 后续版本升级只重下二进制层（约 60–120MB）。本版首次拉取仍为全量：
+  层 digest 整体变化，属一次性代价。
+- 功能与运行行为不变；容器内路径、entrypoint、卷挂载均未调整。
+
+### 验证
+
+- 重排后各层依赖复核：`docker/install-tools.sh` 不引用 `/app` 内容，
+  `pangu-hostd` 仅在运行时由 `docker/docker-entrypoint.sh` 调用，
+  `.dockerignore` 对 `dist/` 的放行规则不受影响；
+- `go build ./...`（镜像只搬运预编译二进制，构建图未改）。
+
 ## [0.1.19] - 2026-11-24
 
 ### 修复（Word 报告导出排版）
