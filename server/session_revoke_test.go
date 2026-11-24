@@ -22,6 +22,13 @@ func newRevocationTestServer(t *testing.T) *Server {
 	t.Cleanup(func() { _ = m.Close() })
 	s := &Server{m: m}
 	s.jwtKey.Store([]byte("0123456789abcdef0123456789abcdef"))
+	// 吊销状态是全局 settings（同库跨测试共享）。哨兵按「iat <= 哨兵」fail-closed，
+	// 不清掉的话后续测试在同一 unix 秒内签发的 token 会被误判为已吊销
+	// （CI 高负载下稳定复现 TestSideHTTPPreparationCancellationAndClear 401）。
+	t.Cleanup(func() {
+		_ = m.pg.SetSetting(settingRevokeAllBefore, "0")
+		_ = m.pg.SetSetting(settingRevokedJtis, "{}")
+	})
 	return s
 }
 
