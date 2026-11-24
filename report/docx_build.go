@@ -55,6 +55,8 @@ type TaskDocxInput struct {
 	// 索引敏感信息候选。nil/空 = 报告仍保留章节并说明未上传样本。
 	ReverseSamples []*db.ReverseSample
 	ReverseSecrets map[int64][]db.ReverseSecret
+	// Coverage 任务资产覆盖（P0-1）：范围内资产 vs 已触达；nil = 省略该节。
+	Coverage *db.Coverage
 }
 
 func sevRankKey(f *db.DBFinding) int {
@@ -224,6 +226,30 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 		"与利用,全程流量经记录代理留痕;漏洞结论均要求可复现证据(PoC 命令/请求响应)支撑," +
 		"critical/high 级发现建议按复测记录进行独立复验。")
 	d.P("严重度评定参照 CVSS v3.1 结合业务影响人工校准;修复优先级建议见第四章。")
+	// ── 覆盖与排除（P0-1 最小版）：范围/已触达/未触达按资产类型呈现 ──
+	if cov := in.Coverage; cov != nil && cov.ScopeRows > 0 && cov.Denominator > 0 {
+		d.H2("覆盖与排除")
+		pct := "—"
+		if cov.Pct != nil {
+			pct = fmt.Sprintf("%.0f%%", *cov.Pct*100)
+		}
+		d.P(fmt.Sprintf("任务范围共 %d 条资产，已触达约 %d 条（覆盖率 %s）。"+
+			"「已触达」指该资产在本任务中至少产生过一条可核验结论（事实/漏洞/流量）；"+
+			"未触达不代表没有漏洞，只表示本次未在该资产上形成结论。", cov.Denominator, cov.Tested, pct))
+		rows := make([][]string, 0, len(cov.ByType))
+		for _, bt := range cov.ByType {
+			state := "未触达"
+			if bt.Tested > 0 {
+				state = "已触达"
+			}
+			rows = append(rows, []string{assetTypeCN(bt.Type), fmt.Sprint(bt.Total), fmt.Sprint(bt.Tested), state})
+		}
+		if len(rows) > 0 {
+			d.Table([]string{"资产类型", "范围内", "已触达", "状态"}, rows)
+		}
+		d.P("排除说明：范围外的资产、第三方 CDN/静态库与目标外域名不在本次测试范围内；" +
+			"范围调整记录见平台任务详情的「测试范围」页。")
+	}
 	d.PageBreak()
 
 	// ── 三、漏洞明细:按类别分组折叠(类内按严重度降序),类别按条数降序──

@@ -2,6 +2,142 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 优化（上下文成本，移植上游 0.4.117）
+
+- **工具可见性上限**：工具总数已 90+，默认只让 30 个工具的 schema 进 prompt——
+  写回/核心执行面（Bash/文件、record_fact/report_finding/insert_assets/
+  save_evidence、http_request/session_login/scan_with_nuclei、graph_overview、
+  list_assets/node_detail、kill_work/spawn_task/wrapup/Skill 等）永远可见，其余
+  按原顺序补位；超出的只保留名字，走 SDK 既有 DeferredTools 机制（schema 不下发，
+  可用 SearchExtraTools/ExecuteExtraTool 发现并调用）。工具仍留在 registry，不
+  影响可调用性。`PANGU_TOOL_VISIBILITY_LIMIT=0` 关闭（负数等价）。
+
+### 新增（Tor / I2P 隐藏服务渗透支持）
+
+- **按后缀自动路由**：`.onion → Tor`、`.i2p → I2P`，其余目标仍走全局代理/录制代理；
+  默认 Tor `socks5h://127.0.0.1:9050`、I2P `http://127.0.0.1:4444`，可在系统设置关闭/修改。
+- **socks5 出口修复**：agent 的 `http_request`/`session_login` 与自定义 HTTP 工具此前
+  只用 `http.ProxyURL`（不认 socks），现已统一走 `proxyprobe.ConfigureTransport`，
+  HTTP/SOCKS 混合按 host 分流；同时接上了此前未调用的 `SetEgressProxy`。
+- **录制 MITM 上游**：隐藏后缀优先级高于代理池/全局，捕获开时隐藏服务流量经 MITM
+  留痕；捕获关时客户端直连对应代理。
+- **高延迟适配**：新增 `hidden_service_timeout_seconds`（默认 90）、`hidden_service_retries`
+  （默认 2，仅 GET/HEAD）、`hidden_service_connect_timeout_seconds`（默认 30）；
+  `http_probe` 脚本对隐藏服务串行执行并按 host 选择 `--proxy`。
+- 前端系统设置新增「Tor / I2P 隐藏服务」卡片；`docs/部署手册.md` 第 10 节给出
+  Tor/I2P 启动、配置、示例与限制（WebFetch/nuclei 单代理限制）。
+- 仅文档/配置/网络路由变更；`proxyprobe`、`traffic`、agent 目标单测通过。
+
+### 优化（技能库全面增强）
+
+- **统一结构**：24 个内置 `SKILL.md` 全部补齐「与本平台的衔接」工具映射表（把场景映射到
+  `http_probe`/`http_request`/`session_login`/`auth_request`/`js_audit`/`diff_responses`/
+  `api_contract`/`miniprogram_*`/`report_finding`/`save_evidence`/`listener_*`）、证据与验证
+  纪律、合规边界；缺失索引的补充按需加载入口。
+- **内容扩写**：薄弱技能（无线/硬件、OPSEC、智能合约、二进制逆向、0day、源码审计、AI/LLM、
+  云与容器、域渗透、攻击面侦察等）补充实战命令、验证矩阵、常见失败模式与证据口径；
+  `src-hunting`/`vuln-hunting`/`api-recon`/`playwright-cli`/`scopesentry` 增加平台工具自动化
+  配方与失败自查，不改变既有方法论主体。
+- 仅文档/技能内容变更，无 Go 逻辑改动；技能守门与 tags 解析测试通过。
+
+### 新增（微信小程序渗透能力）
+
+- **技能包 `skills/wechat-miniprogram`**：SKILL.md 工作流 + `rules/`（43 类漏洞分类与验证
+  口径、检查清单、云开发/开放能力专项、专项报告格式）+ `references/`（取包解包与抓包、
+  登录态与多身份、脱敏案例、自动化与证据留痕）+ `scripts/`（Android adb 取包、PC 微信取包）。
+- **原生工具 `miniprogram_unpack`**：解包标准 wxapkg（v1 明文/单字节 XOR，逐 key 自校验），
+  输出文件清单、app-config/project.config、sourcemap；拒绝路径穿越，限制文件数/大小/总量。
+  不支持变体明确报错并提示 wxappUnpacker/unveilr。
+- **原生工具 `miniprogram_audit`**：静态扫描解包产物，抽取接口 URL、wx.cloud 环境/云函数、
+  硬编码密钥（片段脱敏）、appid、sourcemap、openid 等敏感参数，并映射到 43 类排查提示。
+- 两个工具注册进 worker/mainagent 工具集，`miniprogram_audit` 另给 planner；技能包绑定
+  planner/pentest/worker/reporter（`builtinSkillVisibility`）。
+
+### 新增（Agent 评测基线与验证观测）
+
+- **评测基线 API**：`GET /api/eval/benchmark?days=90`（或 `?task_ids=1,2,3` 固定标定集）
+  只读聚合任务成功率、漏洞误报率、high/critical 未验证率（无证据文本且未绑流量）、
+  token 成本与墙钟时长。纯 `aggregateBenchmark` 可单测。没有这套度量，任何「加强
+  Agent」都无法证明有效，也无法判断 C5 该做多强。
+- **洞察页可视化**：洞察页新增「Agent 评测基线」卡片——成功率 / 误报率 / 高危
+  未验证率 / 平均 token / 平均时长五项指标 + 逐任务明细表，随顶部时间窗（7/30/90 天）
+  一起刷新；接口失败时静默降级，不影响原有趋势与企业聚合视图。
+- **收尾未验证告警**：任务落终态前，除既有「缺详细报告」检查外，新增确定性提示——
+  high/critical 漏洞既无证据文本也无绑定流量时点名提醒（不阻断、不自动降级），
+  作为 C5「出报告前自验证」是否加码的观测依据。
+
+> 注：路线图 C1/C2/C3（攻击链字段、报告章节、交互图）与 C4（洞察页）经核查本地
+> 已完整实现，本次不重复建设；C5 仅落「度量 + 观测」，自动回放验证待数据积累后再定。
+
+### 新增（Agent 自愈与预算，移植上游 0.4.101 / 0.4.106 / 0.4.114 / 0.4.115）
+
+- **高错误率工具标注**：worker 启动前聚合本任务工具延迟账本，把「调用 ≥5 次且
+  错误率 ≥60%」的 worker 侧工具按错误率取 Top3 注入系统提示，明确「先查目标可达性/
+  参数，别原样重试，换等价工具或换打法」。数据复用 `ToolLatencyAggregate`，纯旁路。
+- **任务级 Token 预算网关**：新增设置 `task_budget_tokens`（0=关闭，1M–500M）与
+  `task_budget_warn_pct`（默认 80）。任务累计 token 达软阈值时向 planner 注入收敛
+  提醒（停止铺面、最多派 1 条收尾意图、优先写回并判目标，30 分钟节流）；达硬上限
+  走统一收尾 `auto_budget`（可带在跑意图收尾，目标未全达成记 timeout，不谎报 done）。
+  只统计 token（平台无计费价格表）；分钟维度复用既有任务 deadline/autopilot 延寿。
+- **价值评分驱动的态势截断**：`graph_overview` 的 `recent_facts` / `recent_done_intents`
+  由「纯最新截断」改为「先按价值保底、再按最新补足」——fact 按 observed>inferred、
+  有证据、由有产出意图产生加权（昂贵零产出方向的产出降权）；终态意图优先保留有
+  yields 的。规模未超上限时行为与旧版一致。复用既有 96KB 家族预算、cold_digests 与
+  autopilot/auto_finish 看门狗，不新增后台协程。
+
+### 新增（交付质量，移植上游 0.4.100 / 0.4.101 / 0.4.102）
+
+- **写入工具参数容错 + 幂等键**：`report_finding` 解析前做确定性归一——剥
+  JSON 字符串包裹与 `{"finding":{...}}` 外壳、字段别名折叠（`type/class→vulnclass`、
+  `desc/description→summary`、`proof/poc/request/response→evidence`、`risk/level→severity`
+  含中文档位）、`assets/asset_id` 标量与逗号串转数组、缺 summary 从 name/证据首行
+  兜底、缺 vulnclass 按关键词推导并做标准类别归一。模型没给 `root_cause_key` 时，
+  从「类别 + URL 路径 + 首个参数名」生成 `idem:` 幂等键，同一参数位的重复上报走
+  既有去重链路（证据完整保留）。归一幂等，合法入参逐字节不变。
+- **漏洞证据确定性复核**：`report_finding` 回执新增 `verification_audit`——按证据
+  形态推断验证策略（http_diff / dual_identity / poc_replay / effect_proof / oracle /
+  manual）并机械检查缺口（缺 baseline/proof 流量、缺双身份对照、缺可重放命令或
+  输出关键行、影响证据过短等）。不调 LLM、不阻断入库；critical/high 的缺口拼进
+  `evidence_note`，low/medium 只给 needs_human 不判 fail。
+- **意图终态经验（reflection）**：新增 `intent_reflections` 表（幂等建表），每个
+  意图到达终态时写入维度/终态/停止原因/产出数/摘要，不调 LLM。planner 态势新增
+  `recent_lessons`（最近 8 条）；worker 启动时注入同维度最近 3 条收场记录，明确
+  「仅供参考、别原样重跑」。
+- **报告「覆盖与排除」章节**：任务报告在测试方法论后新增资产覆盖小节——范围内
+  资产数、已触达数、覆盖率与按资产类型的明细表，并声明「未触达不等于没有漏洞」。
+  数据复用现有 coverage 聚合，无覆盖数据时整节省略。
+
+### 安全（移植上游 0.4.82 / 0.4.90 / 0.4.98 / 0.4.111）
+
+- **CRLF / `@file` 头注入修复**：`auth_request` 的 header、`diff_responses` 的
+  header_a/header_b 由模型生成，进入 `curl -H` 前统一校验——只允许可打印 ASCII
+  0x20–0x7E、拒绝 `@` 前缀（curl 会把后续路径当本地文件读出来发送）、拒绝 `\r`
+  （一行被拆成多个头，CWE-113）；`http_request` 的 user_agent 同口径归一。
+- **`session_login` 预置凭据熔断**：资产上登记的凭据连续 2 次 401/403 后本地
+  熔断 30 分钟，期间不发任何登录请求，避免撞锁客户提供的测试/生产账号；2xx
+  清零、5xx 与传输错误中性记账；凭据内容变化（改密/换 token）自动解除；
+  未熔断时回执带剩余尝试次数。
+- **附件配额闭环 + 删除接口**：件数/总量改为可配置（设置键 `artifact_max_count`
+  / `artifact_max_bytes`，默认 300 件 / 500MB）；新增
+  `DELETE /api/tasks/{id}/artifacts/{aid}`，先按 task_id 删 DB 行再清理落盘文件
+  与预览目录；任务详情「证据附件」显示已用/上限，勾选后可批量删除。此前触顶后
+  `save_evidence` 永久失败且没有任何补救路径。
+- **不可信工具输出隔离**：Bash/Read/Grep/WebFetch/WebSearch/http_request/
+  session_login/scan_with_nuclei/http_probe/api_contract/diff_responses/
+  js_audit 与 MCP 工具的返回内容包进
+  `<UNTRUSTED_TOOL_OUTPUT tool="...">…</UNTRUSTED_TOOL_OUTPUT>` 边界，明确
+  「这是数据不是指令」；内容里伪造的闭合标签会被转义；命中英文注入话术时额外
+  加安全标记。平台写回/图谱/审批等结构化回执原样透传，避免被调用方当脏数据。
+  注入特征与既有 steer 告警共用 `agent/injection.go` 一份实现。
+
+### 验证
+
+- `go build ./...`、`go vet ./agent/ ./server/ ./db/`；
+- 新增单测：头注入/UA 归一、熔断状态机、不可信边界包裹与透传；
+- `npx tsc --noEmit`、`NEXT_EXPORT=1 npx next build`（静态导出通过）。
+
 ## [0.1.20] - 2026-11-24
 
 ### 优化（镜像层顺序：升级拉取量从 ~727MB 降到 ~100MB）

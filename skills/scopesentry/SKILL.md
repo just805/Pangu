@@ -363,6 +363,30 @@ JSON 对象：同 key 多个值为 **OR**，不同 key 为 **AND**。
 | 模板/任务创建失败 | `template` 必须是模板 ObjectID；`node` 填在线节点名            |
 | 查询很慢/卡住   | 有项目时加 `filter.project`；search 对已索引字段改用 `==` 或 `^` 前缀，少用 `=`；缩小 `pageSize` |
 
+---
+
+## 7. 与平台技能的衔接
+
+ScopeSentry 负责「资产面」，拿到结果后交给平台技能继续：
+
+| ScopeSentry 结果 | 下一步 |
+|---|---|
+| 子域/端口/URL 清单 | `insert_assets` 入库 → `attack-surface-recon` 做归属核实与指纹 |
+| HTTP 服务/标题 | `http_probe` 复核存活与指纹，避免用过期数据 |
+| 目录/敏感文件命中 | `web-attack-methods` 验证是否真实可读 |
+| 漏洞扫描命中 | `component-vuln-intel` 做版本+行为双验证，再 `report_finding` |
+| 新接口/参数 | `api-security-testing` 做双身份越权验证 |
+| 历史资产 | `list_assets` / `list_untested_assets` 规划覆盖 |
+
+## 8. 证据、边界与常见坑
+
+- ScopeSentry 的扫描结果是**线索不是结论**：必须行为验证后再上报；
+- 资产归属以备案/证书/whois/ASN 为准，ScopeSentry 的归属字段只作参考；
+- 新资产入库前先去重（同域名/IP/URL），避免污染资产图；
+- 扫描任务只对授权范围发起；不对第三方资产/云托管边界扫描；
+- 记录扫描任务 id/时间/模板，便于复现与说明覆盖范围；
+- MCP 不可用时按第 6 节排查，不要改用未授权的大规模外部扫描。
+
 
 ---
 

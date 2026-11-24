@@ -1,8 +1,10 @@
 package db
 
 import (
-	"strconv"
 	"context"
+	"database/sql"
+	"errors"
+	"strconv"
 	"time"
 )
 
@@ -110,6 +112,39 @@ func (d *DB) CountTaskArtifacts(taskID string) (count int, bytes int64, err erro
 	err = d.QueryRow(`SELECT COUNT(*), COALESCE(SUM(size_bytes),0) FROM task_artifacts WHERE task_id=$1`, taskID).
 		Scan(&count, &bytes)
 	return
+}
+
+// TaskArtifactQuota 附件配额（件数 / 总字节）。默认值与历史常量一致，
+// 可由系统设置 artifact_max_count / artifact_max_bytes 覆盖（0 或非法值回落默认）。
+type TaskArtifactQuota struct {
+	MaxCount int
+	MaxBytes int64
+}
+
+const (
+	// DefaultArtifactMaxCount 每任务默认附件件数上限（实战任务证据量常超 100）。
+	DefaultArtifactMaxCount = 300
+	// DefaultArtifactMaxBytes 每任务默认附件总量上限（500MB）。
+	DefaultArtifactMaxBytes int64 = 500 << 20
+)
+
+// DeleteTaskArtifact 删除一条附件并返回被删记录（调用方据此删除落盘文件）。
+// taskID 参与条件，防跨任务误删；不存在返回 (nil, nil)。
+func (d *DB) DeleteTaskArtifact(taskID string, id int64) (*TaskArtifact, error) {
+	var a TaskArtifact
+	err := d.QueryRow(`
+DELETE FROM task_artifacts WHERE id=$1 AND task_id=$2
+RETURNING id,task_id,COALESCE(finding_id,0),name,kind,COALESCE(mime,''),size_bytes,COALESCE(sha256,''),
+          COALESCE(source_url,''),COALESCE(note,''),COALESCE(preview_state,''),COALESCE(preview_pages,0),COALESCE(preview_error,''),storage_path,created_at`, id, taskID).
+		Scan(&a.ID, &a.TaskID, &a.FindingID, &a.Name, &a.Kind, &a.Mime, &a.SizeBytes,
+			&a.SHA256, &a.SourceURL, &a.Note, &a.PreviewState, &a.PreviewPages, &a.PreviewError, &a.Storage, &a.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &a, nil
 }
 
 // UpdateTaskArtifactFinding 修改附件归属（v0.4.20）：findingID=0 表示任务级。

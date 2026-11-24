@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { CpuIcon, FlaskConicalIcon, GaugeIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon, TimerResetIcon } from "lucide-react";
+import { CpuIcon, FlaskConicalIcon, GaugeIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon, TimerResetIcon, WalletIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,13 @@ export default function SystemSettingsPage() {
   const [savingProxy, setSavingProxy] = React.useState(false);
   const [globalProxyInput, setGlobalProxyInput] = React.useState("");
   const [savingGlobalProxy, setSavingGlobalProxy] = React.useState(false);
+  const [hiddenEnabled, setHiddenEnabled] = React.useState(true);
+  const [torProxyInput, setTorProxyInput] = React.useState("socks5h://127.0.0.1:9050");
+  const [i2pProxyInput, setI2PProxyInput] = React.useState("http://127.0.0.1:4444");
+  const [hiddenTimeout, setHiddenTimeout] = React.useState("90");
+  const [hiddenRetries, setHiddenRetries] = React.useState("2");
+  const [hiddenConnectTimeout, setHiddenConnectTimeout] = React.useState("30");
+  const [savingHidden, setSavingHidden] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -48,6 +55,9 @@ export default function SystemSettingsPage() {
   const [intentBudgetEnabled, setIntentBudgetEnabled] = React.useState(true);
   const [intentBudgetTokens, setIntentBudgetTokens] = React.useState("3000000");
   const [savingIntentBudget, setSavingIntentBudget] = React.useState(false);
+  const [taskBudgetTokens, setTaskBudgetTokens] = React.useState("0");
+  const [taskBudgetWarnPct, setTaskBudgetWarnPct] = React.useState("80");
+  const [savingTaskBudget, setSavingTaskBudget] = React.useState(false);
   const [savingAutoFinish, setSavingAutoFinish] = React.useState(false);
   // 冷节点压缩的输出预算与墙钟上限。0=用默认值(65536 token / 20 分钟)。
   const [compactionTokens, setCompactionTokens] = React.useState("0");
@@ -75,6 +85,12 @@ export default function SystemSettingsPage() {
     setTavilyKeySet(!!s.tavily_key_set);
     setProxyInput(s.web_search_proxy ?? "");
     setGlobalProxyInput(s.global_proxy ?? "");
+    setHiddenEnabled(s.hidden_service_enabled !== false);
+    setTorProxyInput(s.tor_proxy ?? "socks5h://127.0.0.1:9050");
+    setI2PProxyInput(s.i2p_proxy ?? "http://127.0.0.1:4444");
+    setHiddenTimeout(String(s.hidden_service_timeout_seconds ?? 90));
+    setHiddenRetries(String(s.hidden_service_retries ?? 2));
+    setHiddenConnectTimeout(String(s.hidden_service_connect_timeout_seconds ?? 30));
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
     setCompactionTokens(String(s.compaction_max_tokens ?? 0));
@@ -91,6 +107,8 @@ export default function SystemSettingsPage() {
     setAutoFinishMax(String(s.auto_finish_max_rounds ?? 80));
     setIntentBudgetEnabled(s.intent_budget_enabled !== false);
     setIntentBudgetTokens(String(s.intent_budget_tokens ?? 3000000));
+    setTaskBudgetTokens(String(s.task_budget_tokens ?? 0));
+    setTaskBudgetWarnPct(String(s.task_budget_warn_pct ?? 80));
   }, []);
 
   const saveWorkers = () => {
@@ -163,6 +181,28 @@ export default function SystemSettingsPage() {
       })
       .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingIntentBudget(false));
+  };
+
+  const saveTaskBudget = () => {
+    const tokens = Number(taskBudgetTokens);
+    const pct = Number(taskBudgetWarnPct);
+    if (!Number.isInteger(tokens) || (tokens !== 0 && (tokens < 1000000 || tokens > 500000000))) {
+      toast.error("任务 token 预算必须是 0（关闭）或 1000000–500000000 之间");
+      return;
+    }
+    if (!Number.isInteger(pct) || pct < 50 || pct > 95) {
+      toast.error("提醒阈值必须在 50–95 之间");
+      return;
+    }
+    setSavingTaskBudget(true);
+    api
+      .setSettings({ task_budget_tokens: tokens, task_budget_warn_pct: pct })
+      .then((s) => {
+        apply(s);
+        toast.success("已保存任务级预算（下一轮规划生效）");
+      })
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingTaskBudget(false));
   };
 
   const saveCompaction = () => {
@@ -370,6 +410,40 @@ export default function SystemSettingsPage() {
       .finally(() => setSavingGlobalProxy(false));
   };
 
+  const saveHiddenService = () => {
+    const timeout = Number(hiddenTimeout);
+    const retries = Number(hiddenRetries);
+    const connect = Number(hiddenConnectTimeout);
+    if (!Number.isInteger(timeout) || timeout < 10 || timeout > 600) {
+      toast.error("隐藏服务超时必须在 10–600 秒之间");
+      return;
+    }
+    if (!Number.isInteger(retries) || retries < 0 || retries > 5) {
+      toast.error("隐藏服务重试次数必须在 0–5 之间");
+      return;
+    }
+    if (!Number.isInteger(connect) || connect < 5 || connect > 120) {
+      toast.error("连接超时必须在 5–120 秒之间");
+      return;
+    }
+    setSavingHidden(true);
+    api
+      .setSettings({
+        hidden_service_enabled: hiddenEnabled,
+        tor_proxy: torProxyInput.trim(),
+        i2p_proxy: i2pProxyInput.trim(),
+        hidden_service_timeout_seconds: timeout,
+        hidden_service_retries: retries,
+        hidden_service_connect_timeout_seconds: connect,
+      })
+      .then((s) => {
+        apply(s);
+        toast.success("已保存 Tor / I2P 隐藏服务设置（下一次任务装配生效）");
+      })
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingHidden(false));
+  };
+
 
   // Run a real "test" search ("test") against the CURRENT form values (backend +
   // proxy + entered key), falling back to saved values server-side. Toasts result.
@@ -500,6 +574,98 @@ export default function SystemSettingsPage() {
             <p className="text-muted-foreground text-xs">
               {globalProxyInput.trim() ? "已配置 · 所有目标流量经此代理出网" : "未配置 · 目标流量直连出网"}
             </p>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <RadioTowerIcon className="size-4" />
+              Tor / I2P 隐藏服务
+            </CardTitle>
+            <CardDescription>
+              <b>.onion</b> 自动走 Tor、<b>.i2p</b> 自动走 I2P；其余目标仍走上面的全局代理/录制代理。
+              只影响隐藏后缀，不改变普通流量。
+              <br />
+              Tor 默认 <code>socks5h://127.0.0.1:9050</code>（DNS 交给代理解析）；I2P 默认 HTTP 代理{" "}
+              <code>http://127.0.0.1:4444</code>（也可填 <code>socks5://127.0.0.1:4447</code>）。
+              隐藏网络延迟高，超时/重试只作用于 .onion/.i2p；探测脚本对隐藏服务串行执行。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-4 rounded-lg border px-3 py-2">
+              <div className="flex flex-col">
+                <span className="text-sm font-medium">启用隐藏服务路由</span>
+                <span className="text-muted-foreground text-xs">
+                  关闭后 .onion/.i2p 按普通出口处理（通常不可达）
+                </span>
+              </div>
+              <Switch
+                checked={hiddenEnabled}
+                disabled={!loaded || savingHidden}
+                onCheckedChange={setHiddenEnabled}
+              />
+            </div>
+            <label className="flex flex-col gap-1 text-sm">
+              <span>Tor 代理</span>
+              <Input
+                autoComplete="off"
+                placeholder="socks5h://127.0.0.1:9050"
+                value={torProxyInput}
+                disabled={!loaded || savingHidden}
+                onChange={(e) => setTorProxyInput(e.target.value)}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span>I2P 代理</span>
+              <Input
+                autoComplete="off"
+                placeholder="http://127.0.0.1:4444"
+                value={i2pProxyInput}
+                disabled={!loaded || savingHidden}
+                onChange={(e) => setI2PProxyInput(e.target.value)}
+              />
+            </label>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <label className="flex flex-col gap-1 text-sm">
+                <span>超时（秒，10–600）</span>
+                <Input
+                  type="number"
+                  min={10}
+                  max={600}
+                  value={hiddenTimeout}
+                  disabled={!loaded || savingHidden}
+                  onChange={(e) => setHiddenTimeout(e.target.value)}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                <span>重试次数（0–5）</span>
+                <Input
+                  type="number"
+                  min={0}
+                  max={5}
+                  value={hiddenRetries}
+                  disabled={!loaded || savingHidden}
+                  onChange={(e) => setHiddenRetries(e.target.value)}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                <span>连接超时（秒，5–120）</span>
+                <Input
+                  type="number"
+                  min={5}
+                  max={120}
+                  value={hiddenConnectTimeout}
+                  disabled={!loaded || savingHidden}
+                  onChange={(e) => setHiddenConnectTimeout(e.target.value)}
+                />
+              </label>
+            </div>
+            <div>
+              <Button onClick={saveHiddenService} disabled={!loaded || savingHidden}>
+                {savingHidden ? "保存中…" : "保存"}
+              </Button>
+            </div>
           </CardContent>
         </Card>
 
@@ -942,6 +1108,53 @@ export default function SystemSettingsPage() {
             <div>
               <Button onClick={saveIntentBudget} disabled={!loaded || savingIntentBudget}>
                 {savingIntentBudget ? "保存中…" : "保存"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <WalletIcon className="size-4" />
+              任务级 Token 预算网关
+            </CardTitle>
+            <CardDescription>
+              整个任务累计 token 达软阈值（默认 80%）时，系统向规划者注入一条<b>收敛提醒</b>：
+              停止铺新面、优先把已有结论写回并判目标；达 100% 时走统一收尾止损。
+              0 = 关闭。只统计 token（平台无计费价格表，不做 USD 估算）。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <label className="flex flex-col gap-1 text-sm">
+              <span>任务 token 预算（0 = 关闭；1M–500M）</span>
+              <Input
+                type="number"
+                min={0}
+                max={500000000}
+                step={1000000}
+                className="w-full font-mono text-sm sm:w-48"
+                value={taskBudgetTokens}
+                disabled={!loaded || savingTaskBudget}
+                onChange={(e) => setTaskBudgetTokens(e.target.value)}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span>软提醒阈值（50–95%）</span>
+              <Input
+                type="number"
+                min={50}
+                max={95}
+                step={5}
+                className="w-full font-mono text-sm sm:w-48"
+                value={taskBudgetWarnPct}
+                disabled={!loaded || savingTaskBudget}
+                onChange={(e) => setTaskBudgetWarnPct(e.target.value)}
+              />
+            </label>
+            <div>
+              <Button onClick={saveTaskBudget} disabled={!loaded || savingTaskBudget}>
+                {savingTaskBudget ? "保存中…" : "保存"}
               </Button>
             </div>
           </CardContent>

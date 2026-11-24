@@ -90,6 +90,17 @@ func intentDimension(explicit, summary string) string {
 	return inferDimension(summary)
 }
 
+// DimensionFromPayload 从意图节点 payload 取最终维度（显式值优先，否则按摘要推断）。
+// 供 server 在意图终态写 reflection 时使用。
+func DimensionFromPayload(payload json.RawMessage) string {
+	var p struct {
+		Dimension string `json:"dimension"`
+		Summary   string `json:"summary"`
+	}
+	_ = json.Unmarshal(payload, &p)
+	return intentDimension(p.Dimension, p.Summary)
+}
+
 // IsExploitDimension 判断该维度是否属于「利用/深挖」类：这类意图经常需要
 // 连续几十次请求、多步链（拿凭据→登录→提权→取数），租约墙钟要放宽。
 func IsExploitDimension(dim string) bool {

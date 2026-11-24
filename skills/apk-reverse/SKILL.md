@@ -107,6 +107,22 @@ Java 只是 JNI 包装 / 核心签名在 native / `System.loadLibrary()` 后逻�
 未授权/越权（换 id/token）/注入/逻辑；签名算法可复算后自己构造请求。
 按取证口径**可以导出样本与数据**，但要分批控速、登记哈希（save_evidence 自动算 SHA-256）。
 
+### 8. 风控与加固识别（静态优先）
+
+| 类型 | 特征 | 处理 |
+|---|---|---|
+| 加固/壳 | `StubApp`/`SecShell`/`libjiagu`/`libprotectClass` | 先脱壳或转 native/动态；不硬刚 |
+| root 检测 | `su` 路径、`RootBeer`、`/system/xbin` | 有设备时 Hook 返回 false |
+| SSL pinning | OkHttp `CertificatePinner`、自定义 `TrustManager` | objection/Frida 绕过（仅自有测试包） |
+| 反调试 | `ptrace`、`TracerPid`、`Debug.isDebuggerConnected` | 记录并尝试绕过 |
+| 模拟器检测 | 传感器/属性/文件特征 | 真机优先；无设备则记录 |
+| 签名校验 | 包签名 hash 比对 | 重打包需 patch 校验点 |
+| 动态加载 | `DexClassLoader`、`System.load` | 找落地 dex/so 再分析 |
+| 完整性校验 | 文件 hash/CRC | patch 校验函数或绕过 |
+
+- 服务器无设备时：只写「静态识别结果 + 需要设备验证」，不假装已验证。
+- 脱壳/绕过属高风险操作，只在授权测试包上做，产物不外传。
+
 ## 输出要求
 
 至少说明：包名与签名、入口组件、关键逻辑在 Java/smali/`.so` 哪一层、

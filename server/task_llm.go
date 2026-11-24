@@ -707,6 +707,18 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	} else {
 		scopeGuard, notifyDedup = true, true
 	}
+	// 隐藏服务（Tor/I2P）：.onion/.i2p 按后缀走对应代理，普通目标不受影响。
+	hsCfg := s.m.HiddenServiceConfig()
+	hsOpts := agent.HiddenServiceOptions{}
+	if hsCfg.Enabled {
+		hsOpts = agent.HiddenServiceOptions{
+			Tor:            hsCfg.TorProxy,
+			I2P:            hsCfg.I2PProxy,
+			Timeout:        hsCfg.Timeout,
+			ConnectTimeout: hsCfg.ConnectTimeout,
+			Retries:        hsCfg.Retries,
+		}
+	}
 	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
 	wk.SetScopeFlags(scopeGuard, scopeInherit, notifyDedup)
 	wk.SetFindingRecorder(s.evidenceStore())
@@ -717,6 +729,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetNoaEnabled(s.m.NoaCompactionEnabled)     // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	wk.SetRunTimeout(time.Duration(s.agentRunSeconds("worker")) * time.Second)
 	wk.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	wk.SetHiddenService(hsOpts)
 	wk.SetWebSearch(s.webSearchFor("worker"))
 	wk.SetConstraintInject(s.constraintInjectWorker) // 操作约束注入 worker(可配置,默认开)
 	// 任务级登录凭据（v0.4.8）：装配时读一次并注入 worker system prompt。
@@ -726,6 +739,18 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 		if id64, err := strconv.ParseInt(t.ID, 10, 64); err == nil {
 			if pgTask, err2 := s.m.PG().GetTask(id64); err2 == nil && pgTask != nil && pgTask.AuthConfig != nil && pgTask.AuthConfig.Enabled {
 				wk.SetTaskAuthBlock(pgTask.AuthConfig.PromptBlock())
+			}
+			// 高错误率工具标注（上游 0.4.114/115）：每 run 实时聚合本任务工具延迟账本，
+			// 把反复失败的工具注入 worker 系统提示，提示换手段而非原样重试。
+			if id64 > 0 {
+				pg := s.m.PG()
+				wk.SetToolPerf(func() []agent.ToolPerfHint {
+					stats, err := pg.ToolLatencyAggregate(context.Background(), id64, 50)
+					if err != nil {
+						return nil
+					}
+					return agent.BuildToolPerfHints(stats)
+				})
 			}
 		}
 	}
@@ -764,6 +789,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 		})
 	}
 	pl.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	pl.SetHiddenService(hsOpts)
 	pl.SetWebSearch(s.webSearchFor("planner"))
 	pl.SetConstraintInject(s.constraintInjectPlanner) // 操作约束注入 planner(可配置,默认开)
 	// cold-digest §7: 冷节点后台压缩。引擎经权威解析器实际驱动的就是这套 per-task planner
@@ -795,6 +821,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetMaxTokens(mainRuntime.maxTokens)
 	main.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	main.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	main.SetHiddenService(hsOpts)
 	main.SetWebSearch(s.webSearchFor("mainagent"))
 	main.SetSteerWork(s.engine.SteerWork)          // steer_work：人对运行中 work 实时纠偏
 	main.SetAttributions(t.Guard.AttributionStats) // Guard 归因样本（B6）→ 概览（人在环路同享打回计数与实物）

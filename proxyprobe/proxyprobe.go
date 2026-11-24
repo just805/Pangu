@@ -72,9 +72,11 @@ func Validate(raw string) (string, error) {
 }
 
 // Normalize 把用户随手写的形式补成标准 URL：
-//   "10.0.0.14:7897"        → http://10.0.0.14:7897（本地代理多是 http 混合口）
-//   "10.0.0.14:7897/"       → 同上
-//   "socks5://h:1080"       → 原样
+//
+//	"10.0.0.14:7897"        → http://10.0.0.14:7897（本地代理多是 http 混合口）
+//	"10.0.0.14:7897/"       → 同上
+//	"socks5://h:1080"       → 原样
+//
 // 空串原样返回（=直连）。
 func Normalize(raw string) string {
 	s := strings.TrimSpace(raw)
@@ -258,4 +260,186 @@ func hintFor(scheme, errMsg string) string {
 		return "SOCKS5 代理不可用，检查端口与是否需要认证"
 	}
 	return "代理不可用，检查地址、端口与认证信息"
+}
+
+// ── 隐藏服务（Tor / I2P）路由 ────────────────────────────────────────────
+//
+// 目标：按域名后缀自动选出口——.onion → Tor、.i2p → I2P、其余走平台既有出口。
+// Tor 默认是 SOCKS5（socks5h 的 h 表示 DNS 交给代理侧，x/net/proxy 天然如此），
+// net/http 的 ProxyURL 不认 socks，所以这里同时配置 Proxy（HTTP 型代理）与
+// DialContext（SOCKS 型代理），并按请求 host 分流。
+
+// HiddenProxies 是 Tor / I2P 的代理地址（空 = 不启用该类隐藏服务）。
+type HiddenProxies struct {
+	Tor string
+	I2P string
+}
+
+// HiddenKind 返回 host 属于哪类隐藏服务：tor / i2p / ""（普通域名）。
+func HiddenKind(host string) string {
+	h := hostOnly(host)
+	switch {
+	case strings.HasSuffix(h, ".onion"):
+		return "tor"
+	case strings.HasSuffix(h, ".i2p"):
+		return "i2p"
+	}
+	return ""
+}
+
+// SocksDialContext 把 socks5/socks5h 代理转成可复用的 DialContext。
+func SocksDialContext(proxyURL string) (func(context.Context, string, string) (net.Conn, error), error) {
+	u, err := parseProxyURL(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	if u == nil || u.Scheme != "socks5" {
+		return nil, fmt.Errorf("不是 socks5 代理: %q", proxyURL)
+	}
+	d, err := newSocksDialer(u)
+	if err != nil {
+		return nil, err
+	}
+	return d.DialContext, nil
+}
+
+// ConfigureTransport 按 host 给 http.Transport 配置隐藏服务路由：
+//   - .onion → Tor 代理（socks 走 DialContext，http 走 Proxy）；
+//   - .i2p   → I2P 代理；
+//   - 其他   → platform（平台全局/MITM 出口）。
+//
+// platform 为空表示其余目标直连。任何代理地址非法都会返回错误（由调用方决定降级）。
+func ConfigureTransport(tr *http.Transport, platform string, hs HiddenProxies) error {
+	if tr == nil {
+		return fmt.Errorf("transport 为空")
+	}
+	torU, err := parseProxyURL(hs.Tor)
+	if err != nil {
+		return fmt.Errorf("Tor 代理无效: %w", err)
+	}
+	i2pU, err := parseProxyURL(hs.I2P)
+	if err != nil {
+		return fmt.Errorf("I2P 代理无效: %w", err)
+	}
+	platU, err := parseProxyURL(platform)
+	if err != nil {
+		return fmt.Errorf("平台出口代理无效: %w", err)
+	}
+
+	// HTTP 型代理交给 net/http 的 Proxy；SOCKS 型交给 DialContext。
+	tr.Proxy = func(req *http.Request) (*url.URL, error) {
+		switch HiddenKind(req.URL.Host) {
+		case "tor":
+			if torU != nil && !isSocksURL(torU) {
+				return torU, nil
+			}
+			return nil, nil
+		case "i2p":
+			if i2pU != nil && !isSocksURL(i2pU) {
+				return i2pU, nil
+			}
+			return nil, nil
+		default:
+			if platU != nil && !isSocksURL(platU) {
+				return platU, nil
+			}
+			return nil, nil
+		}
+	}
+
+	torDial, err := socksDialFor(torU)
+	if err != nil {
+		return fmt.Errorf("Tor SOCKS 初始化失败: %w", err)
+	}
+	i2pDial, err := socksDialFor(i2pU)
+	if err != nil {
+		return fmt.Errorf("I2P SOCKS 初始化失败: %w", err)
+	}
+	platDial, err := socksDialFor(platU)
+	if err != nil {
+		return fmt.Errorf("平台 SOCKS 初始化失败: %w", err)
+	}
+
+	direct := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	isProxyEndpoint := func(addr string) bool {
+		for _, u := range []*url.URL{torU, i2pU, platU} {
+			if u != nil && !isSocksURL(u) && strings.EqualFold(addr, u.Host) {
+				return true
+			}
+		}
+		return false
+	}
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// 正在拨 HTTP 代理自身 → 必须直连，不能再套一层出口。
+		if isProxyEndpoint(addr) {
+			return direct.DialContext(ctx, network, addr)
+		}
+		switch HiddenKind(addr) {
+		case "tor":
+			if torDial != nil {
+				return torDial(ctx, network, addr)
+			}
+		case "i2p":
+			if i2pDial != nil {
+				return i2pDial(ctx, network, addr)
+			}
+		default:
+			if platDial != nil {
+				return platDial(ctx, network, addr)
+			}
+		}
+		return direct.DialContext(ctx, network, addr)
+	}
+	return nil
+}
+
+func hostOnly(host string) string {
+	host = strings.TrimSpace(host)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.ToLower(strings.Trim(host, "[]"))
+}
+
+func parseProxyURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	// 裸 host:port 默认按 http 代理（与 normalizeProxyAddr/旧行为一致）。
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	// socks5h 与 socks5 等价（域名交给代理侧解析），统一成 socks5 便于分流。
+	if strings.HasPrefix(strings.ToLower(raw), "socks5h://") {
+		raw = "socks5://" + raw[len("socks5h://"):]
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	switch u.Scheme {
+	case "http", "https", "socks5":
+	case "":
+		return nil, fmt.Errorf("代理 %q 缺少协议(用 http:// 或 socks5://)", raw)
+	default:
+		return nil, fmt.Errorf("不支持的代理协议 %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("代理 %q 缺少 host:port", raw)
+	}
+	return u, nil
+}
+
+func isSocksURL(u *url.URL) bool { return u != nil && u.Scheme == "socks5" }
+
+func socksDialFor(u *url.URL) (func(context.Context, string, string) (net.Conn, error), error) {
+	if !isSocksURL(u) {
+		return nil, nil
+	}
+	d, err := newSocksDialer(u)
+	if err != nil {
+		return nil, err
+	}
+	return d.DialContext, nil
 }

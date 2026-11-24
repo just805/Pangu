@@ -124,3 +124,31 @@ tags:
 - `api-security-testing`：接口验证执行；本库 `idor-test.md`/`authbypass-test.md` 是手法细节。
 - `web-attack-methods`：注入/服务端速查；本库对应专题是**更深的实战长文**，冲突时以专题为准。
 - `pentest-verification` / `pentest-output-standards`：落库与报告门禁；本库 `vuln-report-format.md` 补充版式细节。
+
+## 平台工具组合配方（自动化）
+
+| 阶段 | 组合 | 说明 |
+|---|---|---|
+| 侦察 | `attack-surface-recon` + `http_probe` + `insert_assets` | 先证归属再入库 |
+| 前端接口 | `js_audit` + `api_contract` | sourcemap 还原 + 契约提取 |
+| 身份矩阵 | `session_login`（A/B）+ `auth_request` + `diff_responses` | 越权唯一可信口径 |
+| 单发验证 | `http_request`（cookie jar）+ `listener_*`（OOB） | 流量留痕 |
+| 已知漏洞 | `search_vulns` + `get_poc` + `scan_with_nuclei` | 版本 + 行为双验证 |
+| 证据 | `save_evidence` + `traffic_refs` + `record_fact` | 每条结论可追溯 |
+| 交付 | `evidence_check` + `report_finding` | 通过验收门禁 |
+
+### 一个方向的标准闭环
+
+1. `graph_overview` 看已有事实/意图，避免重复；
+2. 选一个维度（对象/流程/状态/数据/资源/错误/组合）派意图；
+3. 侦察→拿接口→双身份验证→真实影响；
+4. `record_fact`（含负结果）→ 够 L3/L4 再 `report_finding`；
+5. `evidence_check` 过了再交付。
+
+## 常见失败模式（自查）
+
+- 只看版本/banner 就报漏洞 → 回退为 inferred fact；
+- 越权只测一个身份 → 补 A/B 矩阵；
+- 参数换 payload 而非换维度 → 回到 `vuln-hunting` 的七维；
+- 同一接口重复 curl → 先查 `traffic_search`；
+- 未验证的推断写成已确认 → 报告会被退回。

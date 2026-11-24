@@ -15,10 +15,10 @@ import (
 
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/just805/pangu/agent"
 	"github.com/just805/pangu/db"
 	"github.com/just805/pangu/intercept"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // isFKViolation reports whether err is a Postgres foreign-key violation (SQLSTATE
@@ -1092,11 +1092,37 @@ func (e *Engine) warnFindingsWithoutReport(t *Task) {
 			}
 		}
 	}
-	if len(missing) == 0 {
-		return
+	if len(missing) > 0 {
+		e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
+			Summary: fmt.Sprintf("收尾检查：%d 条漏洞缺少详细报告（%s…），可在漏洞页补齐后再导出", len(missing), strings.Join(missing, "、"))})
 	}
-	e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
-		Summary: fmt.Sprintf("收尾检查：%d 条漏洞缺少详细报告（%s…），可在漏洞页补齐后再导出", len(missing), strings.Join(missing, "、"))})
+	// C5 观测项：high/critical 既无证据文本、也未绑定任何流量——报告阶段最危险的
+	// 误报来源。这里只做确定性提示（不阻断、不自动降级），配合 /api/eval/benchmark
+	// 的未验证率统计，用于决定后续是否加强到「出报告前自验证」。
+	var unverified []string
+	for _, f := range fs {
+		if f.Severity != db.SeverityCritical && f.Severity != db.SeverityHigh {
+			continue
+		}
+		if strings.TrimSpace(f.Evidence) != "" || f.TrafficCount > 0 {
+			continue
+		}
+		title := strings.TrimSpace(f.Name)
+		if title == "" {
+			title = strings.TrimSpace(f.VulnClass)
+		}
+		if title == "" {
+			title = "未分类"
+		}
+		unverified = append(unverified, fmt.Sprintf("#%d %s", f.ID, title))
+		if len(unverified) >= 5 {
+			break
+		}
+	}
+	if len(unverified) > 0 {
+		e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
+			Summary: fmt.Sprintf("收尾检查：%d 条 high/critical 漏洞既无证据文本也无绑定流量（%s…），报告前建议补验或降级", len(unverified), strings.Join(unverified, "、"))})
+	}
 }
 
 func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
@@ -1193,6 +1219,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 				}
 			}
 			return // goalless 分支永不进入 planner.Plan
+		}
+		// 任务级预算网关（上游 0.4.101）：到硬上限直接登记收尾并放弃本轮 LLM 调用；
+		// 到软阈值把「收敛」提醒塞进本轮 trigger，随规划一起下发给 planner。
+		if e.checkTaskBudget(t) {
+			return
 		}
 		if !e.beginTaskOperation(t.ID) {
 			return
@@ -1568,6 +1599,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			_ = t.Store.SetIntentStopReason(intent.ID, db.IntentStopTaskTimeout)
 		}
 		log.Printf("[worker %s] task %s 意图 #%d 因任务超时收尾结束(exhausted)，写回 %s", name, t.ID, intent.ID, wrote)
+		e.recordIntentReflection(t, intent, "exhausted", db.IntentStopTaskTimeout)
 		e.touch(t.ID)
 		return true
 	}
@@ -1581,6 +1613,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			_ = t.Store.SetIntentStopReason(intent.ID, db.IntentStopTaskDone)
 		}
 		log.Printf("[worker %s] task %s 意图 #%d 因目标达成取消(stopped)", name, t.ID, intent.ID)
+		e.recordIntentReflection(t, intent, "stopped", db.IntentStopTaskDone)
 		e.touch(t.ID)
 		return true
 	}
@@ -1593,6 +1626,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			_ = t.Store.SetIntentStopReason(intent.ID, db.IntentStopTaskDone)
 		}
 		log.Printf("[worker %s] task %s 意图 #%d 因任务已完成而取消(stopped)", name, t.ID, intent.ID)
+		e.recordIntentReflection(t, intent, "stopped", db.IntentStopTaskDone)
 		e.touch(t.ID)
 		return true
 	}
@@ -1617,6 +1651,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 			_ = t.Store.SetIntentStopReason(intent.ID, db.IntentStopKilled)
 		}
 		log.Printf("[worker %s] task %s 意图 #%d 被终止(stopped)", name, t.ID, intent.ID)
+		e.recordIntentReflection(t, intent, "stopped", db.IntentStopKilled)
 		e.touch(t.ID)
 		t.Notify()
 		return true
@@ -1672,6 +1707,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 	}
 	log.Printf("[worker %s] task %s 意图 #%d 结束: %s (写回 %s)", name, t.ID, intent.ID, state, wrote)
+	e.recordIntentReflection(t, intent, state, stopReason)
 	// 意图墙钟遥测（v0.4.27）：wall_ms 落 intent payload，planner 的 compactIntents
 	// 会带上它——「这条方向烧了多久」在图上可审计，不再只活在 activity 里。
 	if err := t.Store.MergeIntentPayload(intent.ID, map[string]any{

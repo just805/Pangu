@@ -30,11 +30,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/sirupsen/logrus"
-	"github.com/just805/pangu/db"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/just805/pangu/db"
+	"github.com/just805/pangu/proxyprobe"
 	mproxy "github.com/lqqyt2423/go-mitmproxy/proxy"
+	"github.com/sirupsen/logrus"
 	_ "modernc.org/sqlite"
 )
 
@@ -182,6 +183,10 @@ type Traffic struct {
 	// lastPick 记录 host → 最近一次为它选中的池上游(Pick 时写,错误上报时读;
 	// host 粒度足够熔断统计,并发同 host 偶尔错位可接受)。
 	lastPick sync.Map // host(string) -> proxy URL string
+	// hiddenTor / hiddenI2P 是 .onion / .i2p 的专属上游（Tor/I2P 代理）。
+	// 优先级高于代理池与全局出口：隐藏后缀只能走对应网络，不能落到普通出口。
+	hiddenTor atomic.Pointer[url.URL]
+	hiddenI2P atomic.Pointer[url.URL]
 }
 
 // Open initializes the traffic tree, blob store and SQLite index under dir.
@@ -230,15 +235,7 @@ func Open(dir, addr string) (*Traffic, error) {
 	// a direct dial. When a global egress proxy IS configured (SetUpstreamProxy),
 	// every captured request — intercepted AND transparently tunneled — is
 	// forwarded through it instead, so no host leaks the real source IP.
-	p.SetUpstreamProxy(func(req *http.Request) (*url.URL, error) {
-		if pool := t.pool.Load(); pool != nil {
-			if u := pool.Pick(req.Host); u != nil {
-				t.lastPick.Store(hostOnly(req.Host), u.String())
-				return u, nil
-			}
-		}
-		return t.upstream.Load(), nil
-	})
+	p.SetUpstreamProxy(t.pickUpstream)
 	// Fail-open: MITM every host by default, EXCEPT ones a prior request proved we
 	// can't intercept without breaking (see maybePassthrough). Those are tunneled
 	// transparently so the request still reaches the target instead of being killed.
@@ -334,7 +331,6 @@ func (t *Traffic) ProxyPoolEnabled() bool {
 	return t.pool.Load() != nil
 }
 
-
 // SetUpstreamProxy points every captured request at a global egress proxy
 // (http/https/socks5, optional user:pass in the URL). An empty raw string clears
 // it, restoring direct dialing. The change is atomic and takes effect on the next
@@ -353,6 +349,50 @@ func (t *Traffic) SetUpstreamProxy(raw string) error {
 	return nil
 }
 
+// SetHiddenServiceUpstream 设置 .onion / .i2p 的专属上游（Tor/I2P 代理）。
+// 空串清除该类；任一无效则整体不生效（先全部校验再提交）。热更新，原子生效。
+func (t *Traffic) SetHiddenServiceUpstream(tor, i2p string) error {
+	parse := func(raw string) (*url.URL, error) {
+		if strings.TrimSpace(raw) == "" {
+			return nil, nil
+		}
+		return ValidateProxyURL(raw)
+	}
+	tu, err := parse(tor)
+	if err != nil {
+		return fmt.Errorf("Tor 代理: %w", err)
+	}
+	iu, err := parse(i2p)
+	if err != nil {
+		return fmt.Errorf("I2P 代理: %w", err)
+	}
+	t.hiddenTor.Store(tu)
+	t.hiddenI2P.Store(iu)
+	return nil
+}
+
+// pickUpstream 按 host 选择上游：隐藏后缀（.onion/.i2p）优先于代理池与全局出口，
+// 避免隐藏服务请求落到普通出口而必然失败。
+func (t *Traffic) pickUpstream(req *http.Request) (*url.URL, error) {
+	switch proxyprobe.HiddenKind(req.Host) {
+	case "tor":
+		if u := t.hiddenTor.Load(); u != nil {
+			return u, nil
+		}
+	case "i2p":
+		if u := t.hiddenI2P.Load(); u != nil {
+			return u, nil
+		}
+	}
+	if pool := t.pool.Load(); pool != nil {
+		if u := pool.Pick(req.Host); u != nil {
+			t.lastPick.Store(hostOnly(req.Host), u.String())
+			return u, nil
+		}
+	}
+	return t.upstream.Load(), nil
+}
+
 // ValidateProxyURL parses and checks a proxy URL (http/https/socks5, optional
 // user:pass), returning the parsed URL. Exposed so callers can validate a global
 // proxy before persisting it even when the traffic proxy itself is disabled.
@@ -364,10 +404,14 @@ func ValidateProxyURL(raw string) (*url.URL, error) {
 	}
 	switch u.Scheme {
 	case "http", "https", "socks5":
+	case "socks5h":
+		// socks5h 的 h 表示 DNS 交给代理侧；go-mitmproxy 的 socks5 实现本就是
+		// 域名交给代理，故归一到 socks5。
+		u.Scheme = "socks5"
 	case "":
 		return nil, fmt.Errorf("代理 %q 缺少协议(用 http://、https:// 或 socks5://)", raw)
 	default:
-		return nil, fmt.Errorf("不支持的代理协议 %q(用 http、https 或 socks5)", u.Scheme)
+		return nil, fmt.Errorf("不支持的代理协议 %q(用 http、https、socks5 或 socks5h)", u.Scheme)
 	}
 	if u.Host == "" {
 		return nil, fmt.Errorf("代理 %q 缺少主机地址", raw)

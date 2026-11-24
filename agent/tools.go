@@ -10,12 +10,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	acperm "github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/just805/pangu/db"
 	"github.com/just805/pangu/hosttools"
+	"github.com/just805/pangu/proxyprobe"
 )
 
 // directionReport（P1 方向产出率报表）：最近终态意图按 token 消耗降序取 top N，
@@ -139,6 +141,12 @@ type ToolSet struct {
 	// 与 Bash 的 HTTP_PROXY 同源（记录 MITM 或全局代理），保证流量留痕一致。
 	egressProxy string
 	egressCA    string
+	// hidden 是 .onion/.i2p 的按后缀路由代理；hiddenTimeout/hiddenRetries 供
+	// http_request 在高延迟隐藏网络上使用。由 host 装配时注入。
+	hidden               proxyprobe.HiddenProxies
+	hiddenTimeout        time.Duration
+	hiddenConnectTimeout time.Duration
+	hiddenRetries        int
 	// lastScopeWarnings 是最近一次 record_fact 中 source/foreign 资产的提示，
 	// 只回传、不阻断写入。
 	lastScopeWarnings []string
@@ -685,15 +693,20 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// recent_facts：非折叠事实里最新的一窗（≤N，factNodes 按 id 降序即最新在前）。已折进
 	// digest 且仍冷的（hidden）走 cold_digests，不在此重复。每条 {id, summary, from_intent?,
 	// confidence?}；evidence 等详情用 node_detail(id)。更早的用 list_facts 翻。
+	// recent_facts 选择（价值评分 + 分层截断）：先保底高价值事实（observed+证据、
+	// 由有产出意图产生的），其余名额按最新补齐；规模未超上限时与旧的「纯最新」一致。
 	const recentFactsCap = 20
-	recentFacts := make([]map[string]any, 0, recentFactsCap)
+	const recentFactsHighValue = 8
+	visibleFacts := make([]*db.Node, 0, len(factNodes))
 	for _, n := range factNodes {
-		if len(recentFacts) >= recentFactsCap {
-			break
-		}
 		if hidden(n.ID) {
 			continue // 已折进 digest 且仍冷 —— 见 cold_digests
 		}
+		visibleFacts = append(visibleFacts, n)
+	}
+	selectedFacts := selectFactsByValue(visibleFacts, recentFactsCap, recentFactsHighValue, factFrom, yieldsOf, tokens)
+	recentFacts := make([]map[string]any, 0, len(selectedFacts))
+	for _, n := range selectedFacts {
 		m := compactNode(n)
 		if from := factFrom[n.ID]; from > 0 {
 			m["from_intent"] = from // 本事实由哪个意图产生
@@ -715,10 +728,11 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	out["direction_report"] = directionReport(recentDone, yieldsOf, tokens)
 	// recent_done_intents：非折叠的已结束意图里最新的一窗（≤N，recentDone 已按 id 降序）。
 	// 更早的看 done_intents_total 计数 + node_detail(id)。
+	// 价值评分截断：有产出（yields>0）的意图优先保留，其余按最新补足；规模未超上限时
+	// 与旧的「纯最新」一致。
 	const recentDoneCap = 12
-	if len(recentDone) > recentDoneCap {
-		recentDone = recentDone[:recentDoneCap]
-	}
+	const recentDoneHighValue = 6
+	recentDone = selectIntentsByValue(recentDone, recentDoneCap, recentDoneHighValue, yieldsOf, tokens)
 	out["recent_done_intents"] = compactIntents(recentDone, parentsOf, yieldsOf, tokens)
 	// 收官态势(边际收益):最近 N 轮规划后,全任务有没有新的 fact/finding 产出。
 	// 连续 ≥3 轮零新产出且 frontier 空 → 提示用 goal_met 收官(预算保护:
@@ -742,6 +756,13 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	if t.crossLessons != nil {
 		if ls := t.crossLessons(); len(ls) > 0 {
 			out["cross_task_lessons"] = ls
+		}
+	}
+	// 本任务终态经验（reflection）：最近 8 条意图「怎么收场的」，避免同一种失败
+	// 打法重复派。纯读取，缺表/DB 故障时静默省略。
+	if t.ts != nil {
+		if rs, err := t.ts.RecentReflections(8); err == nil && len(rs) > 0 {
+			out["recent_lessons"] = compactLessons(rs)
 		}
 	}
 	// cold-digest §6.1: 折叠冷区的 digest body，按最新成员时间降序取前 N；被截的更旧 digest
@@ -1922,11 +1943,16 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			TrafficRefs                                  []db.TrafficRef   `json:"traffic_refs"`
 			EvidenceHintID                               json.RawMessage   `json:"evidence_hint_id"`
 		}
-		if err := json.Unmarshal(in, &a); err != nil {
+		if err := json.Unmarshal(normalizeFindingInput(in), &a); err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
 		if t.ts == nil {
 			return actool.Errorf("report_finding 需要任务上下文；平台对话请通过 add_task_hint 向对应任务交接漏洞，并在提示中携带已有的 traffic_refs，由任务 Agent 登记。已登记漏洞可用 bind_finding_traffic 补绑。"), nil
+		}
+		// 幂等键：模型没给根因键时，从类别 + URL 路径 + 参数名推导稳定键，
+		// 让同一参数位的重复上报走既有 root_cause_key 去重链路（证据完整保留）。
+		if strings.TrimSpace(a.RootCauseKey) == "" {
+			a.RootCauseKey = deriveIdemRootCause(a.VulnClass, a.Evidence+"\n"+a.Summary)
 		}
 		// 证据门槛（v0.4.5）：critical/high 需要足量可核验证据；不足时打回，
 		// 模型可补证据或降级后重试，而不是让"一句话高危"进入报告。
@@ -2022,15 +2048,19 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			recorded.Traffic.Bindings[i].Snapshot.ReqHead = ""
 			recorded.Traffic.Bindings[i].Snapshot.RespHead = ""
 		}
+		// 确定性证据复核（上游 0.4.102 P0-5 轻量版）：按证据形态推断验证策略并
+		// 机械检查缺口，随回执返回；critical/high 的缺口拼进 evidence_note。
+		audit := AuditFindingEvidence(a.Severity, a.Evidence, refs)
 		result := struct {
 			*db.RecordedFinding
-			EvidenceStatus     string `json:"evidence_status"`
-			EvidenceNote       string `json:"evidence_note,omitempty"`
-			EvidenceVerifyNote string `json:"evidence_verify_note,omitempty"`
-			ChainIntentID      int64  `json:"chain_intent_id,omitempty"`
-			SRCReview          any    `json:"src_review,omitempty"`
-			ChainNote          string `json:"chain_note,omitempty"`
-		}{RecordedFinding: recorded, EvidenceStatus: "bound", EvidenceVerifyNote: verifyNote, SRCReview: review}
+			EvidenceStatus     string       `json:"evidence_status"`
+			EvidenceNote       string       `json:"evidence_note,omitempty"`
+			EvidenceVerifyNote string       `json:"evidence_verify_note,omitempty"`
+			VerificationAudit  FindingAudit `json:"verification_audit"`
+			ChainIntentID      int64        `json:"chain_intent_id,omitempty"`
+			SRCReview          any          `json:"src_review,omitempty"`
+			ChainNote          string       `json:"chain_note,omitempty"`
+		}{RecordedFinding: recorded, EvidenceStatus: "bound", EvidenceVerifyNote: verifyNote, SRCReview: review, VerificationAudit: audit}
 		if len(recorded.CrossTaskDupTasks) > 0 {
 			ids := make([]string, 0, len(recorded.CrossTaskDupTasks))
 			for _, tid := range recorded.CrossTaskDupTasks {
@@ -2061,6 +2091,10 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			if len(recorded.Traffic.Bindings) == 0 {
 				result.EvidenceStatus = "merged"
 			}
+		}
+		// 复核缺口：放在重复/未绑定提示之后，确保不被前面的赋值覆盖。
+		if note := auditNote(audit); note != "" {
+			result.EvidenceNote = strings.TrimSpace(result.EvidenceNote + " " + note)
 		}
 		// 部分引用没挂上（流量 ID 不存在/正文不可读）：漏洞已入库，但要让模型
 		// 知道哪几条证据没生效，否则它会以为证据齐全、报告里就少了这段。
@@ -3058,6 +3092,8 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.apiContractTool(),
 		// search_recent_critical：按【时间】查最近披露的高危漏洞（不需先知道组件名/CVE 号）。
 		t.searchRecentCritical(),
+		// 微信小程序：解包产物静态审计（接口/密钥/云开发信息），规划判方向用。
+		t.miniprogramAudit(),
 		// evidence_check（v0.4.71）：规划阶段复核高/危漏洞证据是否足以支撑危害结论。
 		t.evidenceCheck(),
 	}

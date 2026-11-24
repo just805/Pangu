@@ -740,6 +740,8 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// js_audit（v0.4.59）：SPA/webpack 前端源码泄露审计——任务 18（Vue 站点）
 		// 实测对 .js.map 泄漏完全漏检；sourcemap 还原=原始源码+密钥+接口清单。
 		t.jsAudit(),
+		// 微信小程序：wxapkg 解包 + 解包产物静态审计（接口/密钥/云开发信息）。
+		t.miniprogramUnpack(), t.miniprogramAudit(),
 		// auth_request：用资产上已登记的凭据组装带认证的请求（横向/越权验证的前提）。
 		t.authRequest(),
 		// evidence_check（v0.4.71）：复核高/危漏洞证据是否足以支撑危害结论（13 项检查 + src_ready）。
@@ -794,6 +796,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.httpProbe(),
 		// js_audit（v0.4.59）：SPA/webpack 源码泄露审计（mainagent 与 worker 同款）。
 		t.jsAudit(),
+		// 微信小程序：wxapkg 解包 + 解包产物静态审计（mainagent 与 worker 同款）。
+		t.miniprogramUnpack(), t.miniprogramAudit(),
 		// listener_*：回连接收器（红队 C2 前置）——start/stop 走 ask 审批，sessions 只读。
 		t.listenerStart(), t.listenerStop(), t.listenerSessions(),
 		// auth_request：用资产上已登记的凭据组装带认证的请求（横向/越权验证的前提）。

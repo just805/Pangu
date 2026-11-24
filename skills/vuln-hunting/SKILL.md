@@ -196,3 +196,23 @@ tags:
 ## 参考
 
 `reference.md` —— 每个维度的详细检查清单、常见 payload 形态、证据记录模板。
+
+## 与本平台的衔接（证据链）
+
+| 维度 | 平台工具 |
+|---|---|
+| 看现状/去重 | `graph_overview`、`traffic_search` |
+| 身份换位 | `session_login`（A/B）、`auth_request`、`diff_responses` |
+| 参数/流程测试 | `http_request`、`api_contract` |
+| 带外验证 | `listener_start` + `listener_sessions` |
+| 已知组件 | `search_vulns` / `get_poc` / `scan_with_nuclei` |
+| 证据 | `save_evidence`、`traffic_refs`、`record_fact` |
+| 交付 | `evidence_check`、`report_finding` |
+
+## 证据与升级口径
+
+- 每个维度先写一句假设（「换 B 身份调用会看到 A 的数据」），验证后落 fact；
+- 失败也写 fact（测了哪个维度、结果如何），避免重复劳动；
+- 只有「真实影响」才升级：读到他人/后台数据、写入回读、命令回显；
+- 仅有报错/延迟/版本匹配 → 最多 medium，注明利用条件；
+- 同一接口换 payload 三次无效 → 换维度，不要继续堆 payload。

@@ -23,7 +23,7 @@ import (
 // into the frontier. It is the sole intent generator.
 type Planner struct {
 	// intentQueue 返回 (派发阈值, worker 数)；nil = 不限制。
-	intentQueue func() (int, int)
+	intentQueue     func() (int, int)
 	findingRecorder FindingRecorder
 	// 授权边界守卫开关（v0.4.63）：装配时从设置读取，传到 ToolSet。
 	scopeGuard           bool
@@ -41,6 +41,7 @@ type Planner struct {
 	crossLessons         func() []map[string]any                // 跨任务经验沉淀（P1；nil = 概览不带 cross_task_lessons 块）
 	proxyAddr            string                                 // recording proxy for WebFetch (empty = direct)
 	proxyCACert          string                                 // recording proxy's CA cert path (HTTPS verify)
+	hiddenSvc            HiddenServiceOptions                   // Tor/I2P routing for .onion/.i2p
 	webSearch            WebSearchOpts                          // web_search tool backend selection (off by default)
 	workDir              string                                 // shared work dir (surfaced in prompt as artifact-output target)
 	injectConstraints    func() bool                            // resolver: inject task operation constraints into system prompt? (nil = yes)
@@ -106,6 +107,9 @@ func (p *Planner) compactionWindow() int {
 // SetProxy points the planner's WebFetch at the recording proxy plus the CA cert
 // it trusts to verify HTTPS through it (empty addr = direct).
 func (p *Planner) SetProxy(addr, caCert string) { p.proxyAddr, p.proxyCACert = addr, caCert }
+
+// SetHiddenService 注入 Tor/I2P 隐藏服务路由。
+func (p *Planner) SetHiddenService(o HiddenServiceOptions) { p.hiddenSvc = o }
 
 // SetWebSearch selects the web_search backend for the planner (off by default).
 func (p *Planner) SetWebSearch(o WebSearchOpts) { p.webSearch = o }
@@ -231,6 +235,10 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 		case "depth_gap":
 			// 引擎侧纵深缺口提醒（server/depth_nudge.go）：资产已多、高危 finding 为 0，
 			// 要求停止铺面、把已验证线索打穿成 L3 证据。确定性检查，优先级高于普通观察。
+			b.WriteString("\n- " + ev.Detail)
+		case "budget":
+			// 引擎侧任务级预算提醒（server/task_budget.go）：任务累计 token 达软阈值，
+			// 要求收敛并优先把已有结论写回、判目标。确定性检查，优先级高于普通观察。
 			b.WriteString("\n- " + ev.Detail)
 		case "autopilot_stall":
 			// 自主推进看门狗：只催促推进，不算「新方向」（不进 freshDirection，
@@ -495,6 +503,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// runs in a detached goroutine so it never adds latency to this round.
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
+	tsx.SetEgressProxy(p.proxyAddr, p.proxyCACert)
+	tsx.SetHiddenService(p.hiddenSvc)
 	tsx.SetFindingRecorder(p.findingRecorder)
 	tsx.SetScopeFlags(p.scopeGuard, p.scopeInheritWrites, p.crossTaskNotifyDedup)
 	if p.intentQueue != nil {

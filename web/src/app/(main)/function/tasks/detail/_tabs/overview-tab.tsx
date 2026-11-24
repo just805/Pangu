@@ -1422,6 +1422,9 @@ function TaskAuthCard({ taskId }: { taskId: string }) {
 function TaskArtifactsCard({ taskId }: { taskId: string }) {
   const [list, setList] = React.useState<TaskArtifact[]>([]);
   const [scanning, setScanning] = React.useState(false);
+  // 附件配额（已用/上限）与删除进行中状态：配额触顶后必须有可操作的补救路径。
+  const [quota, setQuota] = React.useState<{ max_count: number; max_bytes: number } | null>(null);
+  const [deleting, setDeleting] = React.useState(false);
   const [expanded, setExpanded] = React.useState(false);
   const [preview, setPreview] = React.useState<TaskArtifact | null>(null);
   const [dataPreview, setDataPreview] = React.useState<TaskArtifact | null>(null);
@@ -1437,9 +1440,12 @@ function TaskArtifactsCard({ taskId }: { taskId: string }) {
   const load = React.useCallback(
     (alive: { v: boolean }) =>
       api
-        .taskArtifacts(taskId)
-        .then((items) => {
-          if (alive.v) setList(items);
+        .taskArtifactsWithQuota(taskId)
+        .then((r) => {
+          if (alive.v) {
+            setList(r.artifacts ?? []);
+            setQuota(r.quota ?? null);
+          }
         })
         .catch(() => {}),
     [taskId],
@@ -1485,8 +1491,27 @@ function TaskArtifactsCard({ taskId }: { taskId: string }) {
       setAssigning(false);
     }
   };
-  const scan = async () => {
-    setScanning(true);
+  // 删除所选附件：DB 行先删、再删落盘文件与预览；不可恢复，必须先确认。
+  const removeSelected = async () => {
+    if (selected.length === 0 || deleting) return;
+    if (!window.confirm(`确认删除所选的 ${selected.length} 项证据附件？文件会一并删除，不可恢复。`)) return;
+    setDeleting(true);
+    try {
+      let freed = 0;
+      for (const id of selected) {
+        const r = await api.deleteTaskArtifact(taskId, id);
+        freed += r.size_bytes || 0;
+      }
+      toast.success(`已删除 ${selected.length} 项，释放 ${fmtSize(freed)}`);
+      setSelected([]);
+      await load({ v: true });
+    } catch (e) {
+      toast.error(`删除失败：${(e as Error).message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+  const scan = async () => {    setScanning(true);
     try {
       const r = await api.scanTaskArtifacts(taskId);
       toast.success(`已补登记 ${r.added} 张（跳过 ${r.skipped}，超出 ${r.truncated}）`);
@@ -1579,7 +1604,8 @@ function TaskArtifactsCard({ taskId }: { taskId: string }) {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <ImageIcon className="size-4 text-primary" /> 证据附件（{list.length}）
+            <ImageIcon className="size-4 text-primary" /> 证据附件（{list.length}
+            {quota ? `/${quota.max_count}` : ""}）
             <div className="ml-auto flex flex-wrap items-center gap-2">
               <Button size="sm" variant="ghost" disabled={scanning || autoBinding} onClick={() => void autoBind()}>
                 {autoBinding ? "关联中…" : "智能关联"}
@@ -1628,6 +1654,14 @@ function TaskArtifactsCard({ taskId }: { taskId: string }) {
                 </NativeSelect>
                 <Button size="sm" disabled={assigning} onClick={() => void applyAssignment()}>
                   {assigning ? "保存中…" : "应用归属"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={deleting}
+                  onClick={() => void removeSelected()}
+                >
+                  {deleting ? "删除中…" : "删除所选"}
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => setSelected([])}>
                   清空

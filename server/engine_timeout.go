@@ -4,8 +4,8 @@ import (
 	"context"
 	"path/filepath"
 
-	"github.com/just805/pangu/intercept"
 	"fmt"
+	"github.com/just805/pangu/intercept"
 	"log"
 	"strconv"
 	"sync/atomic"
@@ -271,7 +271,7 @@ func (e *Engine) settleTaskWithReason(ctx context.Context, t *Task, reason, deta
 		label = "到达超时上限"
 	case "goal_met":
 		label = "planner 判定目标达成且无在跑意图"
-	case "auto_idle", "auto_coverage", "auto_rounds":
+	case "auto_idle", "auto_coverage", "auto_rounds", "auto_budget":
 		label = "自动收尾：" + detail
 	}
 	log.Printf("[settle] task %s 进入收尾（%s）", t.ID, label)

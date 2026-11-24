@@ -420,3 +420,51 @@ playwright-cli show --annotate
 * **Tracing** [references/tracing.md](references/tracing.md)
 * **Video recording** [references/video-recording.md](references/video-recording.md)
 * **Inspecting element attributes** [references/element-attributes.md](references/element-attributes.md)
+
+## 渗透测试用法（Pangu 适配）
+
+浏览器自动化在渗透任务里的价值是「拿到只有浏览器才有的东西」：登录态、懒加载接口、
+前端渲染证据、复杂交互后的状态。纯 HTTP 能做的优先用 `http_request`，不要用浏览器硬点。
+
+### 1. 登录态采集与复用
+
+```bash
+playwright-cli open https://target/login
+playwright-cli snapshot
+playwright-cli fill <ref> "userA"
+playwright-cli fill <ref> "passA" --submit
+playwright-cli storage state -o stateA.json
+playwright-cli cookies
+```
+
+- 把 cookie/token 交给 `session_login` / `http_request` 复用，避免每次重新登录；
+- 身份 A/B 各存一份 storage state，做越权对照。
+
+### 2. 懒加载/接口补全
+
+- 打开页面后依次点开核心路由（列表→详情→下单/个人中心），再 `network requests` 导出；
+- 与 `api_contract` / `js_audit` 的静态清单对照，补齐运行时才出现的接口；
+- 新接口 `record_fact`，交给 `api-security-testing` 做双身份验证。
+
+### 3. 证据截图
+
+- 关键页面/越权结果用 `screenshot --save` 落到任务目录，再 `save_evidence` 登记；
+- 截图包含 URL、关键字段、身份标识；存储型 XSS/前端渲染问题必须有截图。
+
+### 4. 与平台工具的配合
+
+| 场景 | 工具 |
+|---|---|
+| 纯 HTTP 请求 | `http_request`（优先，轻量可控） |
+| 批量探活 | `http_probe` |
+| 前端源码/接口 | `js_audit` / `api_contract` |
+| 登录态复用 | `session_login`（cookie jar） |
+| 身份对照 | `auth_request` + `diff_responses` |
+| 证据 | `save_evidence` |
+
+### 5. 边界
+
+- 只打开授权目标；不做自动注册/批量提交/破坏性操作；
+- 不绕过验证码做批量登录；
+- 自动化脚本存 `save_script`，不在脚本里硬编码真实凭据；
+- 浏览器进程用完关闭，避免长期占用。

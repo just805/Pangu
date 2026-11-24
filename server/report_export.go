@@ -137,6 +137,9 @@ func (s *Server) assembleTaskReport(ctx context.Context, t *Task) (report.TaskDo
 		secs, _ := s.m.pg.ListReverseSecrets(sample.ID)
 		reverseSecrets[sample.ID] = secs
 	}
+	// 资产覆盖（P0-1）：范围内 vs 已触达；失败时留空，报告省略该节。
+	covTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	cov, _ := s.m.Assets().TaskCoverage(covTaskID, t.Store.ID())
 	return report.TaskDocxInput{
 		Title:          fmt.Sprintf("渗透测试报告 — %s", t.Description),
 		Goal:           t.Goal,
@@ -156,6 +159,7 @@ func (s *Server) assembleTaskReport(ctx context.Context, t *Task) (report.TaskDo
 		AttackChain:    chain,
 		ReverseSamples: reverseSamples,
 		ReverseSecrets: reverseSecrets,
+		Coverage:       cov,
 	}, nil
 }
 

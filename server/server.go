@@ -736,6 +736,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/stats", s.stats)
 	mux.HandleFunc("GET /api/stats/tools", s.toolUsageStats)
 	mux.HandleFunc("GET /api/insights", s.insights)
+	mux.HandleFunc("GET /api/eval/benchmark", s.benchmark)
 	mux.HandleFunc("GET /api/lessons", s.listLessons)
 	mux.HandleFunc("GET /api/logs", s.getLogs)
 	mux.HandleFunc("GET /api/logs/history", s.getLogsHistory)
@@ -888,6 +889,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}/artifacts/{aid}/preview/{page}", s.serveArtifactPreview)
 	mux.HandleFunc("GET /api/tasks/{id}/artifacts/{aid}/data-preview", s.serveArtifactDataPreview) // 数据文件在线查看（v0.4.41）
 	mux.HandleFunc("POST /api/tasks/{id}/artifacts/{aid}/preview", s.regenerateArtifactPreview)
+	mux.HandleFunc("DELETE /api/tasks/{id}/artifacts/{aid}", s.deleteTaskArtifact) // 删除附件（配额触顶后的补救路径）
 
 	mux.HandleFunc("GET /api/audit", s.getAudit)
 	mux.HandleFunc("POST /api/gc", s.gc)
@@ -3676,6 +3678,8 @@ func (s *Server) settingsPayload() map[string]any {
 	af := autoFinishConfigFromPG(s.m.pg)
 	apc := autopilotConfigFromPG(s.m.pg)
 	ib := intentBudgetFromPG(s.m.pg)
+	tb := taskBudgetFromPG(s.m.pg)
+	hs := s.m.HiddenServiceConfig()
 	return map[string]any{
 		"traffic_capture":       s.m.TrafficEnabled(),
 		"agent_traffic_binding": s.m.pg.GetBool(settingAgentTrafficBinding, false),
@@ -3684,11 +3688,18 @@ func (s *Server) settingsPayload() map[string]any {
 		"web_search_backend":    backend,
 		"brave_key_set":         strings.TrimSpace(braveKey) != "",
 		"tavily_key_set":        strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":      proxy,                       // 独立出口代理(http/https/socks5)，空=直连
-		"global_proxy":          s.m.GlobalProxy(),           // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
-		"install_proxy":         s.installProxy(),            // 装机代理：只用于宿主工具安装(apt/GitHub下载)，与目标流量无关
-		"python_interpreter":    strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
-		"workers":               s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"web_search_proxy":      proxy,             // 独立出口代理(http/https/socks5)，空=直连
+		"global_proxy":          s.m.GlobalProxy(), // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
+		// 隐藏服务（Tor/I2P）：.onion/.i2p 按后缀走对应代理，普通目标不受影响。
+		"hidden_service_enabled":                 hs.Enabled,
+		"tor_proxy":                              hs.TorProxy,
+		"i2p_proxy":                              hs.I2PProxy,
+		"hidden_service_timeout_seconds":         hs.TimeoutSeconds,
+		"hidden_service_retries":                 hs.Retries,
+		"hidden_service_connect_timeout_seconds": hs.ConnectTimeoutSeconds,
+		"install_proxy":                          s.installProxy(),            // 装机代理：只用于宿主工具安装(apt/GitHub下载)，与目标流量无关
+		"python_interpreter":                     strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
+		"workers":                                s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
 		// 冷节点压缩的输出预算与墙钟上限。0 = 用默认值(32768 token / 20 分钟)。
 		"compaction_max_tokens":      s.m.CompactionTokens(),
 		"compaction_timeout_seconds": s.m.CompactionTimeout(),
@@ -3715,6 +3726,9 @@ func (s *Server) settingsPayload() map[string]any {
 		// 意图级软预算（v0.4.28）：单意图 token 到顶注入收尾提醒（不杀进程）。
 		"intent_budget_enabled": ib.Enabled,
 		"intent_budget_tokens":  ib.Tokens,
+		// 任务级预算网关（上游 0.4.101）：0=关闭；warn_pct 是软提醒阈值百分比。
+		"task_budget_tokens":   tb.Tokens,
+		"task_budget_warn_pct": tb.WarnPct,
 		// 证据逐字回验（v0.4.29）：off|warn|block，默认 warn。
 		"finding_evidence_verify":     evidenceVerifyModeFromPG(s.m.pg).String(),
 		"tool_output_injection_guard": injectionGuardFromPG(s.m.pg),
@@ -3787,11 +3801,18 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		WebSearchBackend *string `json:"web_search_backend"`
 		BraveKey         *string `json:"brave_search_api_key"`
 		TavilyKey        *string `json:"tavily_search_api_key"`
-		WebSearchProxy   *string `json:"web_search_proxy"`   // 独立出口代理(http/https/socks5)；null=不改，""=清空
-		GlobalProxy      *string `json:"global_proxy"`       // 全局出口代理(http/https/socks5)；null=不改，""=清空(直连)
-		InstallProxy     *string `json:"install_proxy"`      // 装机代理：宿主工具安装用；null=不改，""=清空(直连)。不触发 agent 重建
-		PythonInterp     *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
-		Workers          *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
+		WebSearchProxy   *string `json:"web_search_proxy"` // 独立出口代理(http/https/socks5)；null=不改，""=清空
+		GlobalProxy      *string `json:"global_proxy"`     // 全局出口代理(http/https/socks5)；null=不改，""=清空(直连)
+		// 隐藏服务（Tor/I2P）：.onion/.i2p 后缀走对应代理；null=不改。
+		HiddenServiceEnabled        *bool   `json:"hidden_service_enabled"`
+		TorProxy                    *string `json:"tor_proxy"`
+		I2PProxy                    *string `json:"i2p_proxy"`
+		HiddenServiceTimeout        *int    `json:"hidden_service_timeout_seconds"`
+		HiddenServiceRetries        *int    `json:"hidden_service_retries"`
+		HiddenServiceConnectTimeout *int    `json:"hidden_service_connect_timeout_seconds"`
+		InstallProxy                *string `json:"install_proxy"`      // 装机代理：宿主工具安装用；null=不改，""=清空(直连)。不触发 agent 重建
+		PythonInterp                *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
+		Workers                     *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
 		// 冷节点压缩的输出预算与墙钟上限。null=不改，<=0=恢复默认。
 		// 见 agent.Compactor.outTokens:思考型模型的思考长度随 max_tokens 预算
 		// 线性膨胀,预算给小了模型会一直想、正文一个字都吐不出来。
@@ -3813,6 +3834,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		// 意图级软预算（v0.4.28）：单意图 token 上限，500k–20M。
 		IntentBudgetEnabled *bool `json:"intent_budget_enabled"`
 		IntentBudgetTokens  *int  `json:"intent_budget_tokens"`
+		// 任务级预算网关（上游 0.4.101）：tokens=0 关闭，或 1M–500M；warn_pct 50–95。
+		TaskBudgetTokens  *int `json:"task_budget_tokens"`
+		TaskBudgetWarnPct *int `json:"task_budget_warn_pct"`
 		// 授权边界守卫与跨任务去重（v0.4.63）。
 		ScopeWriteGuard      *bool `json:"scope_write_guard"`
 		ScopeInheritWrites   *bool `json:"scope_inherit_writes"`
@@ -4032,6 +4056,28 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// 任务级预算网关（上游 0.4.101）。tokens=0 表示关闭；>0 时夹逼到 1M–500M。
+	if req.TaskBudgetTokens != nil {
+		v := *req.TaskBudgetTokens
+		if v != 0 && (v < 1_000_000 || v > 500_000_000) {
+			writeErr(w, 400, "task_budget_tokens 必须是 0（关闭）或 1000000–500000000 之间")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingTaskBudgetTokens, strconv.Itoa(v)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.TaskBudgetWarnPct != nil {
+		if *req.TaskBudgetWarnPct < 50 || *req.TaskBudgetWarnPct > 95 {
+			writeErr(w, 400, "task_budget_warn_pct 必须在 50–95 之间")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingTaskBudgetWarnPct, strconv.Itoa(*req.TaskBudgetWarnPct)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
 
 	if req.ScopeWriteGuard != nil {
 		if err := s.m.pg.SetBool("scope_write_guard", *req.ScopeWriteGuard); err != nil {
@@ -4179,6 +4225,46 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		changed = true // capture-off egress is baked into agents at build time → rebuild
+	}
+	if req.HiddenServiceEnabled != nil || req.TorProxy != nil || req.I2PProxy != nil ||
+		req.HiddenServiceTimeout != nil || req.HiddenServiceRetries != nil ||
+		req.HiddenServiceConnectTimeout != nil {
+		cfg := s.m.HiddenServiceConfig()
+		if req.HiddenServiceEnabled != nil {
+			cfg.Enabled = *req.HiddenServiceEnabled
+		}
+		if req.TorProxy != nil {
+			cfg.TorProxy = strings.TrimSpace(*req.TorProxy)
+		}
+		if req.I2PProxy != nil {
+			cfg.I2PProxy = strings.TrimSpace(*req.I2PProxy)
+		}
+		if req.HiddenServiceTimeout != nil {
+			if *req.HiddenServiceTimeout < 10 || *req.HiddenServiceTimeout > 600 {
+				writeErr(w, 400, "hidden_service_timeout_seconds 必须在 10–600 之间")
+				return
+			}
+			cfg.TimeoutSeconds = *req.HiddenServiceTimeout
+		}
+		if req.HiddenServiceRetries != nil {
+			if *req.HiddenServiceRetries < 0 || *req.HiddenServiceRetries > 5 {
+				writeErr(w, 400, "hidden_service_retries 必须在 0–5 之间")
+				return
+			}
+			cfg.Retries = *req.HiddenServiceRetries
+		}
+		if req.HiddenServiceConnectTimeout != nil {
+			if *req.HiddenServiceConnectTimeout < 5 || *req.HiddenServiceConnectTimeout > 120 {
+				writeErr(w, 400, "hidden_service_connect_timeout_seconds 必须在 5–120 之间")
+				return
+			}
+			cfg.ConnectTimeoutSeconds = *req.HiddenServiceConnectTimeout
+		}
+		if err := s.m.SetHiddenServiceConfig(cfg); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		changed = true // capture-off 出口在装配 agent 时固化 → 重建
 	}
 	if req.InstallProxy != nil {
 		raw := strings.TrimSpace(*req.InstallProxy)

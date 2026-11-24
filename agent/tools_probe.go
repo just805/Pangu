@@ -27,16 +27,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	actool "github.com/Autumn-27/norma/tool"
 )
 
-const httpProbeScript = `#!/usr/bin/env bash
+const httpProbeScriptTmpl = `#!/usr/bin/env bash
 # http_probe: 对每个 URL 输出一行紧凑 JSON（url/status/bytes/time_ms/title/server/content_type/redirect）
+# .onion → Tor 代理；.i2p → I2P 代理；其余继承环境出口。隐藏服务串行、放宽超时并重试。
+TOR=__TOR__
+I2P=__I2P__
+HIDDEN_MAX=__MAX__
+HIDDEN_CONNECT=__CONNECT__
+HIDDEN_RETRY=__RETRY__
 for u in "$@"; do
   f=$(mktemp); h=$(mktemp)
-  out=$(curl -sS -k -L --max-time 10 -w '%{http_code} %{time_total}' -o "$f" -D "$h" "$u" 2>/dev/null)
+  host=${u#*://}; host=${host%%/*}; host=${host%%:*}
+  case "$host" in
+    *.onion) px="$TOR" ;;
+    *.i2p)   px="$I2P" ;;
+    *)       px="" ;;
+  esac
+  if [ -n "$px" ]; then
+    max="$HIDDEN_MAX"; conn="$HIDDEN_CONNECT"; retry="$HIDDEN_RETRY"; proxy=(--proxy "$px")
+  else
+    max=10; conn=10; retry=0; proxy=()
+  fi
+  out=$(curl -sS -k -L --max-time "$max" --connect-timeout "$conn" --retry "$retry" --retry-delay 2 "${proxy[@]}" -w '%{http_code} %{time_total}' -o "$f" -D "$h" "$u" 2>/dev/null)
   code=${out%% *}; tt=${out##* }
   bytes=$(wc -c < "$f" | tr -d ' ')
   ms=$(awk -v t="$tt" 'BEGIN{printf "%d", t*1000}')
@@ -72,14 +91,45 @@ PYEOF
 done
 `
 
+func renderProbeScript(tor, i2p string, maxTimeout, connectTimeout, retries int) string {
+	return strings.NewReplacer(
+		"__TOR__", shellSingleQuote(tor),
+		"__I2P__", shellSingleQuote(i2p),
+		"__MAX__", strconv.Itoa(maxTimeout),
+		"__CONNECT__", strconv.Itoa(connectTimeout),
+		"__RETRY__", strconv.Itoa(retries),
+	).Replace(httpProbeScriptTmpl)
+}
+
+// httpProbeScript 是默认配置下的探活脚本（测试与文档引用用）。
+var httpProbeScript = renderProbeScript("", "", 90, 30, 2)
+
+// shellSingleQuote 把值安全嵌进单引号字符串。
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // ensureProbeScript 落盘探活脚本（每次调用覆盖写——见文件头注释）；失败返回
 // 空串（调用方退化为让模型手写）。
 func (t *ToolSet) ensureProbeScript() string {
 	if strings.TrimSpace(t.runDir) == "" {
 		return ""
 	}
+	timeout := 90
+	if t.hiddenTimeout > 0 {
+		timeout = int(t.hiddenTimeout / time.Second)
+	}
+	connect := 30
+	if t.hiddenConnectTimeout > 0 {
+		connect = int(t.hiddenConnectTimeout / time.Second)
+	}
+	retries := t.hiddenRetries
+	if retries < 0 {
+		retries = 0
+	}
+	script := renderProbeScript(t.hidden.Tor, t.hidden.I2P, timeout, connect, retries)
 	p := filepath.Join(t.runDir, "probe.sh")
-	if err := os.WriteFile(p, []byte(httpProbeScript), 0o755); err != nil {
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
 		return ""
 	}
 	return p

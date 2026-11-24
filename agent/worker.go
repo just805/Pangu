@@ -64,7 +64,8 @@ type Worker struct {
 	model                string
 	workDir              string
 	proxyAddr            string
-	proxyCACert          string            // recording proxy's CA cert path (for WebFetch HTTPS verify)
+	proxyCACert          string // recording proxy's CA cert path (for WebFetch HTTPS verify)
+	hiddenSvc            HiddenServiceOptions
 	webSearch            WebSearchOpts     // web_search tool backend selection (off by default)
 	tx                   *transcript.Store // raw LLM conversation persistence (nil = off)
 	window               int               // context window in tokens (for compaction)
@@ -80,6 +81,9 @@ type Worker struct {
 	// taskAuthBlock 是任务级登录凭据的渲染块（v0.4.8，由 host 在装配时设置）。
 	// 非空则注入 system prompt：worker 先登录、再在会话内测试。
 	taskAuthBlock string
+	// toolPerf 返回本任务里反复失败的工具（host 从工具延迟账本聚合）。nil = 不注入。
+	// 每 run 读一次，让「刚变坏的工具」下一轮即可提示。
+	toolPerf func() []ToolPerfHint
 	// injectConstraints resolves whether this task's operation constraints get
 	// injected into the worker system prompt. Read per run so the settings toggle
 	// takes effect without rebuilding the agent. nil = inject (default).
@@ -161,6 +165,9 @@ func (w *Worker) SetRunTimeout(run time.Duration) {
 // SetTaskAuthBlock 设置任务级登录凭据渲染块（host 装配时调用；空串=不注入）。
 func (w *Worker) SetTaskAuthBlock(block string) { w.taskAuthBlock = block }
 
+// SetToolPerf 注入「本任务反复失败的工具」读取器（host 装配时调用；nil=不注入）。
+func (w *Worker) SetToolPerf(fn func() []ToolPerfHint) { w.toolPerf = fn }
+
 // SetArtifactRecorder 注入证据附件存储（host 实现）。
 func (w *Worker) SetArtifactRecorder(r ArtifactRecorder) { w.artifactRecorder = r }
 
@@ -203,6 +210,9 @@ func (w *Worker) compactionWindow() int {
 // traffic through, plus the CA cert path WebFetch trusts to verify HTTPS through
 // that MITM proxy. Empty addr disables the hint.
 func (w *Worker) SetProxy(addr, caCert string) { w.proxyAddr, w.proxyCACert = addr, caCert }
+
+// SetHiddenService 注入 Tor/I2P 隐藏服务路由（.onion/.i2p 按后缀走对应代理）。
+func (w *Worker) SetHiddenService(o HiddenServiceOptions) { w.hiddenSvc = o }
 
 // SetWebSearch selects the web_search backend for this worker (off by default).
 func (w *Worker) SetWebSearch(o WebSearchOpts) { w.webSearch = o }
@@ -497,6 +507,8 @@ func firstCancel(cs []func(error)) func(error) {
 
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string, workCancel func(error)) (harness.TerminalReason, WriteCounts, error) {
 	tsx := NewToolSet(ts, name)
+	tsx.SetEgressProxy(w.proxyAddr, w.proxyCACert)
+	tsx.SetHiddenService(w.hiddenSvc)
 	tsx.SetScopeFlags(w.scopeGuard, w.scopeInheritWrites, w.crossTaskNotifyDedup)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
@@ -571,6 +583,18 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 也能站在已有结论上继续推进（此前它只看得到资产本身，看不到别人测出了什么）。
 	if b := priorFactsBlock(ts, ids, 8); b != "" {
 		sysBody += b
+	}
+	// 终态经验：本任务同维度最近 3 条「怎么收场的」，避免同一种失败打法原样重跑。
+	if ts != nil {
+		if dim := DimensionFromPayload(intent.Payload); dim != "" {
+			if rs, err := ts.ReflectionsByDimension(dim, 3); err == nil && len(rs) > 0 {
+				sysBody += "\n\n" + ReflectionBlock(rs)
+			}
+		}
+	}
+	// 工具表现：本任务里反复失败的工具，开工前提示换手段（旁路统计，nil 安全）。
+	if w.toolPerf != nil {
+		sysBody += ToolPerfBlock(w.toolPerf())
 	}
 	// 自主推进：本意图必须被证实/证伪，不得空转收场。
 	sysBody += autopilotTail(ctx, autopilotWorkerGuidance)

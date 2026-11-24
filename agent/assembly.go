@@ -62,8 +62,10 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 		out = ToolResolve(ctx, agentKey, out)
 	}
 	out, def.FindingGuidance = findingWorkflowTools(agentKey, out)
+	// 工具可见性上限：多余工具的 schema 不下发（deferred），名字仍可被发现/调用。
+	def = limitToolVisibility(out, def)
 	for i, t := range out {
-		out[i] = guardPanic(t)
+		out[i] = withUntrustedBoundary(guardPanic(t))
 	}
 	return out, def, cleanup
 }

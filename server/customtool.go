@@ -10,16 +10,16 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/just805/pangu/db"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/just805/pangu/db"
+	"github.com/just805/pangu/proxyprobe"
 )
 
 // 本文件实现自定义工具执行器(docs/自定义工具设计.md)。system=false 的 tools 行按
@@ -476,14 +476,23 @@ func (s *Server) platformEgressTransport() *http.Transport {
 		return nil // 裸 Server（部分测试/极端路径）：无出口可走，直连
 	}
 	addr := s.m.ProxyAddr()
-	if addr == "" {
+	hs := s.m.HiddenServiceConfig()
+	hidden := proxyprobe.HiddenProxies{}
+	if hs.Enabled {
+		hidden = proxyprobe.HiddenProxies{Tor: hs.TorProxy, I2P: hs.I2PProxy}
+	}
+	if addr == "" && hidden.Tor == "" && hidden.I2P == "" {
 		return nil
 	}
-	pu, err := url.Parse(normalizeProxyAddr(addr))
-	if err != nil {
+	tr := &http.Transport{
+		MaxIdleConns:          32,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: 2 * time.Second,
+	}
+	if err := proxyprobe.ConfigureTransport(tr, addr, hidden); err != nil {
 		return nil
 	}
-	tr := &http.Transport{Proxy: http.ProxyURL(pu)}
 	if ca := s.m.ProxyCACert(); ca != "" {
 		if pem, err := os.ReadFile(ca); err == nil {
 			pool := x509.NewCertPool()
@@ -502,11 +511,17 @@ func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
 	if spec.UseRecordingProxy || strings.TrimSpace(spec.Proxy) == "" {
 		return s.platformEgressTransport()
 	}
-	pu, err := url.Parse(normalizeProxyAddr(spec.Proxy))
-	if err != nil {
+	tr := &http.Transport{
+		MaxIdleConns:          32,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: 2 * time.Second,
+	}
+	// 显式 proxy 覆盖隐藏服务路由（用户明确指定出口时以它为准）。
+	if err := proxyprobe.ConfigureTransport(tr, strings.TrimSpace(spec.Proxy), proxyprobe.HiddenProxies{}); err != nil {
 		return nil
 	}
-	return &http.Transport{Proxy: http.ProxyURL(pu)}
+	return tr
 }
 
 // ---------- helpers ----------

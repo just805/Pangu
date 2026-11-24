@@ -193,7 +193,9 @@ func (e *Engine) maybePendingSettle(ctx context.Context, t *Task) bool {
 	if isTerminalStatus(t.lifecycleSnapshot().Status) {
 		return false
 	}
-	if reason != "auto_rounds" {
+	// auto_rounds / auto_budget 是硬上限，可在有在跑意图时收尾（settle 内部先 drain，
+	// 超 grace 硬取消）；其余原因（idle/coverage）等意图跑干再收。
+	if reason != "auto_rounds" && reason != "auto_budget" {
 		active, err := t.Store.HasActiveIntent()
 		if err != nil || active {
 			return false

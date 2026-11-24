@@ -22,6 +22,7 @@ import (
 	"github.com/just805/pangu/enrich"
 	"github.com/just805/pangu/guard"
 	"github.com/just805/pangu/intercept"
+	"github.com/just805/pangu/proxyprobe"
 	"github.com/just805/pangu/traffic"
 	"github.com/just805/pangu/vulnintel"
 )
@@ -337,6 +338,26 @@ type Manager struct {
 	// capture is on it becomes the MITM's upstream; when capture is off it is
 	// injected into agent bash env / WebFetch directly. See ProxyAddr.
 	globalProxy string
+	// 隐藏服务（Tor/I2P）配置：.onion/.i2p 按后缀走对应代理。默认启用，只影响
+	// 隐藏后缀；Tor 默认 socks5h://127.0.0.1:9050，I2P 默认 http://127.0.0.1:4444。
+	hiddenEnabled        bool
+	torProxy             string
+	i2pProxy             string
+	hiddenTimeout        time.Duration
+	hiddenRetries        int
+	hiddenConnectTimeout time.Duration
+}
+
+// HiddenServiceConfig 是隐藏服务路由的运行时快照（设置页/装配 worker 用）。
+type HiddenServiceConfig struct {
+	Enabled               bool          `json:"enabled"`
+	TorProxy              string        `json:"tor_proxy"`
+	I2PProxy              string        `json:"i2p_proxy"`
+	TimeoutSeconds        int           `json:"timeout_seconds"`
+	Retries               int           `json:"retries"`
+	ConnectTimeoutSeconds int           `json:"connect_timeout_seconds"`
+	Timeout               time.Duration `json:"-"`
+	ConnectTimeout        time.Duration `json:"-"`
 }
 
 // Settings keys the UI toggles at runtime.
@@ -357,6 +378,16 @@ const (
 	// (settingGlobalProxy)、搜索代理、LLM 代理完全独立——国内环境常常需要一个
 	// 能出网的代理才能装上 nuclei 这类走 GitHub Release 的工具。
 	settingInstallProxy = "install_proxy"
+	// 隐藏服务（Tor / I2P）：按 .onion / .i2p 后缀自动路由到对应代理。
+	// 只影响隐藏后缀目标；普通目标的出口仍由 global_proxy / 代理池决定。
+	settingHiddenServiceEnabled = "hidden_service_enabled"
+	settingTorProxy             = "tor_proxy"
+	settingI2PProxy             = "i2p_proxy"
+	settingHiddenTimeoutSecs    = "hidden_service_timeout_seconds"
+	settingHiddenRetries        = "hidden_service_retries"
+	settingHiddenConnectSecs    = "hidden_service_connect_timeout_seconds"
+	defaultTorProxy             = "socks5h://127.0.0.1:9050"
+	defaultI2PProxy             = "http://127.0.0.1:4444"
 	// 漏洞情报库（vulnintel）同步开关，默认开——同步自带限速、延迟启动与每轮上限，
 	// agent 的 search_vulns/get_vuln 读它；关闭只是停同步，已入库数据仍可查。
 	settingVulnIntelOn = "vulnintel_enabled"
@@ -599,6 +630,9 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if err := pg.EnsureTaskArtifactsTable(); err != nil {
 		return nil, err
 	}
+	if err := pg.EnsureIntentReflectionsTable(); err != nil {
+		log.Printf("[reflection] create table: %v", err)
+	}
 	if err := pg.EnsureLLMUsageTable(); err != nil {
 		log.Printf("[llmusage] create table: %v", err)
 	}
@@ -663,6 +697,28 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if v, ok, _ := pg.GetSetting(settingGlobalProxy); ok {
 		m.globalProxy = strings.TrimSpace(v)
 	}
+	// 隐藏服务（Tor/I2P）：默认启用，只影响 .onion/.i2p 后缀目标。
+	m.hiddenEnabled = pg.GetBool(settingHiddenServiceEnabled, true)
+	m.torProxy = defaultTorProxy
+	m.i2pProxy = defaultI2PProxy
+	m.hiddenTimeout = 90 * time.Second
+	m.hiddenRetries = 2
+	m.hiddenConnectTimeout = 30 * time.Second
+	if v, ok, _ := pg.GetSetting(settingTorProxy); ok && strings.TrimSpace(v) != "" {
+		m.torProxy = strings.TrimSpace(v)
+	}
+	if v, ok, _ := pg.GetSetting(settingI2PProxy); ok && strings.TrimSpace(v) != "" {
+		m.i2pProxy = strings.TrimSpace(v)
+	}
+	if n, ok := settingInt(pg, settingHiddenTimeoutSecs); ok {
+		m.hiddenTimeout = time.Duration(clampInt(n, 10, 600)) * time.Second
+	}
+	if n, ok := settingInt(pg, settingHiddenRetries); ok {
+		m.hiddenRetries = clampInt(n, 0, 5)
+	}
+	if n, ok := settingInt(pg, settingHiddenConnectSecs); ok {
+		m.hiddenConnectTimeout = time.Duration(clampInt(n, 5, 120)) * time.Second
+	}
 	if m.traffic != nil {
 		if err := m.traffic.SetUpstreamProxy(m.globalProxy); err != nil {
 			log.Printf("[proxy] 全局代理 %q 无效，已忽略: %v", m.globalProxy, err)
@@ -675,6 +731,14 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			} else if len(pool.Entries) > 0 {
 				log.Printf("[proxypool] 已恢复 %d 个上游代理(策略 %s,池优先于全局代理)", len(pool.Entries), pool.Strategy)
 			}
+		}
+		// 隐藏服务上游：优先级高于代理池/全局，只对 .onion/.i2p 生效。
+		if m.hiddenEnabled {
+			if err := m.traffic.SetHiddenServiceUpstream(m.torProxy, m.i2pProxy); err != nil {
+				log.Printf("[proxy] 隐藏服务代理无效，已忽略: %v", err)
+			}
+		} else if err := m.traffic.SetHiddenServiceUpstream("", ""); err != nil {
+			log.Printf("[proxy] 清空隐藏服务代理失败: %v", err)
 		}
 	}
 	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4)
@@ -1136,6 +1200,77 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 	}
 	// Keep the browser MCP's egress in sync with the new global proxy too.
 	m.syncBrowserMCPProxy()
+	return nil
+}
+
+// HiddenServiceConfig returns the current Tor/I2P routing snapshot.
+func (m *Manager) HiddenServiceConfig() HiddenServiceConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return HiddenServiceConfig{
+		Enabled:               m.hiddenEnabled,
+		TorProxy:              m.torProxy,
+		I2PProxy:              m.i2pProxy,
+		TimeoutSeconds:        int(m.hiddenTimeout / time.Second),
+		Retries:               m.hiddenRetries,
+		ConnectTimeoutSeconds: int(m.hiddenConnectTimeout / time.Second),
+		Timeout:               m.hiddenTimeout,
+		ConnectTimeout:        m.hiddenConnectTimeout,
+	}
+}
+
+// SetHiddenServiceConfig validates, persists and applies Tor/I2P routing.
+// 隐藏服务代理只影响 .onion/.i2p；空代理表示该类禁用。
+func (m *Manager) SetHiddenServiceConfig(cfg HiddenServiceConfig) error {
+	tor, err := proxyprobe.Validate(cfg.TorProxy)
+	if err != nil {
+		return fmt.Errorf("tor_proxy: %w", err)
+	}
+	i2p, err := proxyprobe.Validate(cfg.I2PProxy)
+	if err != nil {
+		return fmt.Errorf("i2p_proxy: %w", err)
+	}
+	cfg.TorProxy, cfg.I2PProxy = tor, i2p
+	cfg.TimeoutSeconds = clampInt(cfg.TimeoutSeconds, 10, 600)
+	cfg.Retries = clampInt(cfg.Retries, 0, 5)
+	cfg.ConnectTimeoutSeconds = clampInt(cfg.ConnectTimeoutSeconds, 5, 120)
+
+	if m.traffic != nil {
+		torUp, i2pUp := "", ""
+		if cfg.Enabled {
+			torUp, i2pUp = cfg.TorProxy, cfg.I2PProxy
+		}
+		if err := m.traffic.SetHiddenServiceUpstream(torUp, i2pUp); err != nil {
+			return fmt.Errorf("应用隐藏服务上游: %w", err)
+		}
+	}
+	if err := m.pg.SetBool(settingHiddenServiceEnabled, cfg.Enabled); err != nil {
+		return err
+	}
+	if err := m.pg.SetSetting(settingTorProxy, cfg.TorProxy); err != nil {
+		return err
+	}
+	if err := m.pg.SetSetting(settingI2PProxy, cfg.I2PProxy); err != nil {
+		return err
+	}
+	if err := m.pg.SetSetting(settingHiddenTimeoutSecs, strconv.Itoa(cfg.TimeoutSeconds)); err != nil {
+		return err
+	}
+	if err := m.pg.SetSetting(settingHiddenRetries, strconv.Itoa(cfg.Retries)); err != nil {
+		return err
+	}
+	if err := m.pg.SetSetting(settingHiddenConnectSecs, strconv.Itoa(cfg.ConnectTimeoutSeconds)); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	m.hiddenEnabled = cfg.Enabled
+	m.torProxy = cfg.TorProxy
+	m.i2pProxy = cfg.I2PProxy
+	m.hiddenTimeout = time.Duration(cfg.TimeoutSeconds) * time.Second
+	m.hiddenRetries = cfg.Retries
+	m.hiddenConnectTimeout = time.Duration(cfg.ConnectTimeoutSeconds) * time.Second
+	m.mu.Unlock()
 	return nil
 }
 

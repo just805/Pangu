@@ -30,11 +30,31 @@ import (
 
 // 证据附件限额（v0.5.0）。默认"样本策略"：worker 只保存证明性样本，全量
 // 数据留在任务工作目录、不随报告分发。限额防的是误存全量 PII/超大文件。
+// 件数/总量可由系统设置 artifact_max_count / artifact_max_bytes 覆盖
+// （见 artifactQuota）；单文件上限保持常量。
 const (
-	maxArtifactFileBytes = 20 << 20  // 单文件 20MB
-	maxTaskArtifactCount = 300       // 每任务最多 300 个（实战任务证据量常超 100）
-	maxTaskArtifactBytes = 500 << 20 // 每任务总量 500MB
+	maxArtifactFileBytes = 20 << 20 // 单文件 20MB
 )
+
+// artifactQuota 读取当前生效的附件配额。两个设置键缺失或非法时回落到默认值。
+func (s *Server) artifactQuota() db.TaskArtifactQuota {
+	q := db.TaskArtifactQuota{MaxCount: db.DefaultArtifactMaxCount, MaxBytes: db.DefaultArtifactMaxBytes}
+	pg := s.m.PG()
+	if pg == nil {
+		return q
+	}
+	if v, ok, _ := pg.GetSetting("artifact_max_count"); ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			q.MaxCount = n
+		}
+	}
+	if v, ok, _ := pg.GetSetting("artifact_max_bytes"); ok {
+		if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && n > 0 {
+			q.MaxBytes = n
+		}
+	}
+	return q
+}
 
 // artifactKindByExt 按扩展名推断附件类型（报告里分区展示用）。
 func artifactKindByExt(name string) (kind, mime string) {
@@ -151,19 +171,20 @@ func (s *Server) RecordArtifact(taskID, findingID int64, runDir, relPath, name, 
 	if info.Size() > maxArtifactFileBytes {
 		return nil, fmt.Errorf("文件超过单附件上限（20MB）：%d 字节", info.Size())
 	}
+	quota := s.artifactQuota()
 	if count, total, err := pg.CountTaskArtifacts(taskKey); err == nil {
-		if count >= maxTaskArtifactCount {
-			return nil, fmt.Errorf("本任务附件已达上限（%d 个），请合并或删除后再存", maxTaskArtifactCount)
+		if count >= quota.MaxCount {
+			return nil, fmt.Errorf("本任务附件已达上限（%d 个）：可在任务详情「证据附件」里删除不再需要的项，或调高系统设置 artifact_max_count", quota.MaxCount)
 		}
-		if total+info.Size() > maxTaskArtifactBytes {
-			return nil, fmt.Errorf("本任务附件总量将超过上限（500MB）")
+		if total+info.Size() > quota.MaxBytes {
+			return nil, fmt.Errorf("本任务附件总量将超过上限（%d MB）：可在任务详情「证据附件」里删除旧项，或调高系统设置 artifact_max_bytes", quota.MaxBytes>>20)
 		}
 	}
 
 	return s.recordArtifactAbs(abs, taskKey, findingID, name, kind, sourceURL, note, info.Size())
 }
 
-// listTaskArtifacts 任务附件列表（不含存储路径）。
+// listTaskArtifacts 任务附件列表（不含存储路径），并带上配额便于前端显示剩余空间。
 func (s *Server) listTaskArtifacts(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 	pg := s.m.PG()
@@ -179,7 +200,56 @@ func (s *Server) listTaskArtifacts(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []db.TaskArtifact{}
 	}
-	writeJSON(w, 200, map[string]any{"artifacts": list})
+	quota := s.artifactQuota()
+	writeJSON(w, 200, map[string]any{
+		"artifacts": list,
+		"quota": map[string]any{
+			"max_count": quota.MaxCount,
+			"max_bytes": quota.MaxBytes,
+		},
+	})
+}
+
+// deleteTaskArtifact 删除一条证据附件（上游 0.4.90 同款）：先按 task_id 删 DB 行
+// 防跨任务误删，再删落盘文件与预览 sidecar。释放的字节数回显给前端。
+func (s *Server) deleteTaskArtifact(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+	aid, err := strconv.ParseInt(r.PathValue("aid"), 10, 64)
+	if err != nil || aid <= 0 {
+		writeErr(w, 400, "bad artifact id")
+		return
+	}
+	pg := s.m.PG()
+	if pg == nil {
+		writeErr(w, 500, "PG 不可用")
+		return
+	}
+	a, err := pg.DeleteTaskArtifact(taskID, aid)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if a == nil {
+		writeErr(w, 404, "artifact not found")
+		return
+	}
+	s.removeArtifactFiles(a)
+	writeJSON(w, 200, map[string]any{
+		"deleted":    a.ID,
+		"name":       a.Name,
+		"size_bytes": a.SizeBytes,
+	})
+}
+
+// removeArtifactFiles 删除附件主体与预览目录；文件缺失不视为错误（DB 行已删）。
+func (s *Server) removeArtifactFiles(a *db.TaskArtifact) {
+	if a == nil {
+		return
+	}
+	if strings.TrimSpace(a.Storage) != "" {
+		_ = os.Remove(filepath.Join(s.m.dir, a.Storage))
+	}
+	_ = os.RemoveAll(s.previewDir(a.TaskID, a.ID))
 }
 
 // patchTaskArtifact 修改附件归属（v0.4.20）。body {finding_id}：

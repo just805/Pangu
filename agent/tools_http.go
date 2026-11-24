@@ -41,12 +41,36 @@ import (
 	"time"
 
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/just805/pangu/proxyprobe"
 )
 
 // SetEgressProxy 注入出站代理（与 Bash 子进程的 HTTP_PROXY 同源）。
 // caCert 是记录代理的 CA 证书路径——加载后经 MITM 重签的 HTTPS 才能正常校验。
 func (t *ToolSet) SetEgressProxy(addr, caCert string) {
 	t.egressProxy, t.egressCA = strings.TrimSpace(addr), strings.TrimSpace(caCert)
+}
+
+// HiddenServiceOptions 是 .onion/.i2p 的出口配置（由 host 注入）。
+type HiddenServiceOptions struct {
+	Tor            string
+	I2P            string
+	Timeout        time.Duration
+	ConnectTimeout time.Duration
+	Retries        int
+}
+
+// SetHiddenService 注入隐藏服务路由：.onion 走 Tor、.i2p 走 I2P，其余仍走 egress。
+func (t *ToolSet) SetHiddenService(o HiddenServiceOptions) {
+	t.hidden = proxyprobe.HiddenProxies{Tor: strings.TrimSpace(o.Tor), I2P: strings.TrimSpace(o.I2P)}
+	if o.Timeout > 0 {
+		t.hiddenTimeout = o.Timeout
+	}
+	if o.ConnectTimeout > 0 {
+		t.hiddenConnectTimeout = o.ConnectTimeout
+	}
+	if o.Retries >= 0 {
+		t.hiddenRetries = o.Retries
+	}
 }
 
 // ── 任务级 cookie jar（Netscape 格式，与 curl 互通）─────────────────────────
@@ -320,16 +344,12 @@ func (t *ToolSet) buildHTTPClient(jar http.CookieJar, follow, insecure bool, tim
 		ExpectContinueTimeout: 2 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}
-	if t.egressProxy != "" {
-		pu := t.egressProxy
-		if !strings.Contains(pu, "://") {
-			pu = "http://" + pu
-		}
-		u, err := url.Parse(pu)
-		if err != nil {
+	if t.egressProxy != "" || t.hidden.Tor != "" || t.hidden.I2P != "" {
+		// 统一配置：HTTP 型代理走 Proxy，socks5（Tor）走 DialContext；.onion/.i2p
+		// 按后缀自动切到对应代理。未配置时保留 ProxyFromEnvironment（旧行为）。
+		if err := proxyprobe.ConfigureTransport(tr, t.egressProxy, t.hidden); err != nil {
 			return nil, fmt.Errorf("出口代理解析失败: %w", err)
 		}
-		tr.Proxy = http.ProxyURL(u)
 	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}
 	if t.egressCA != "" {
@@ -414,12 +434,22 @@ func (t *ToolSet) doHTTP(ctx context.Context, a httpArgs, jar http.CookieJar) ht
 	if body != "" {
 		rdr = strings.NewReader(body)
 	}
+	// 隐藏服务（.onion/.i2p）延迟高：未显式指定时用配置的默认超时，上限也放宽。
+	isHidden := proxyprobe.HiddenKind(u.Host) != ""
 	timeout := a.TimeoutSec
 	if timeout <= 0 {
-		timeout = 20
+		if isHidden && t.hiddenTimeout > 0 {
+			timeout = int(t.hiddenTimeout / time.Second)
+		} else {
+			timeout = 20
+		}
 	}
-	if timeout > 120 {
-		timeout = 120
+	maxTimeout := 120
+	if isHidden {
+		maxTimeout = 600
+	}
+	if timeout > maxTimeout {
+		timeout = maxTimeout
 	}
 	follow := true
 	if a.Follow != nil {
@@ -441,6 +471,14 @@ func (t *ToolSet) doHTTP(ctx context.Context, a httpArgs, jar http.CookieJar) ht
 	}
 	// 默认 UA 是 Chrome/131 Windows；显式传 user_agent 时覆盖（issue #13：
 	// 指纹对抗/伪装移动端/复现特定客户端都需要可控的 UA）。
+	if a.UserAgent != "" {
+		ua, uaErr := normalizeToolUserAgent(a.UserAgent)
+		if uaErr != nil {
+			out.Err = uaErr
+			return out
+		}
+		a.UserAgent = ua
+	}
 	switch {
 	case a.UserAgent != "":
 		req.Header.Set("User-Agent", a.UserAgent)
@@ -462,11 +500,31 @@ func (t *ToolSet) doHTTP(ctx context.Context, a httpArgs, jar http.CookieJar) ht
 		user, pass, _ := strings.Cut(a.BasicAuth, ":")
 		req.SetBasicAuth(user, pass)
 	}
-	start := time.Now()
-	resp, err := client.Do(req)
-	out.Millis = time.Since(start).Milliseconds()
-	if err != nil {
-		out.Err = err
+	// 隐藏服务按配置重试：只对幂等的 GET/HEAD 且无请求体做，POST 等不自动重放。
+	attempts := 1
+	if isHidden && t.hiddenRetries > 0 && (method == "GET" || method == "HEAD") && body == "" {
+		attempts += t.hiddenRetries
+	}
+	var resp *http.Response
+	var doErr error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				out.Err = ctx.Err()
+				return out
+			case <-time.After(time.Duration(i) * 2 * time.Second):
+			}
+		}
+		start := time.Now()
+		resp, doErr = client.Do(req)
+		out.Millis = time.Since(start).Milliseconds()
+		if doErr == nil {
+			break
+		}
+	}
+	if doErr != nil {
+		out.Err = doErr
 		return out
 	}
 	defer resp.Body.Close()
@@ -668,6 +726,8 @@ func (t *ToolSet) sessionLogin() actool.CoreTool {
 			}
 			user, pass, token := strings.TrimSpace(a.Username), a.Password, strings.TrimSpace(a.Token)
 			authKindLabel := "explicit"
+			// 预置凭据的熔断 key（显式手输凭据不参与熔断，保持 ""）。
+			breakerKey := ""
 			if a.AssetID > 0 {
 				if t.as == nil {
 					return actool.Errorf("asset_id 需要 AssetStore（当前环境未启用）"), nil
@@ -693,6 +753,7 @@ func (t *ToolSet) sessionLogin() actool.CoreTool {
 				e := entries[idx]
 				user, pass, token = e.Username, e.Password, e.Token
 				authKindLabel = fmt.Sprintf("资产#%d 第 %d 条(%s)", a.AssetID, idx, authKind(e))
+				breakerKey = credBreakerKey(a.AssetID, idx, e)
 			}
 			mode := strings.ToLower(strings.TrimSpace(a.AuthMode))
 			if mode == "" {
@@ -779,7 +840,16 @@ func (t *ToolSet) sessionLogin() actool.CoreTool {
 			if strings.TrimSpace(args.Method) == "" {
 				args.Method = "POST"
 			}
+			// 预置凭据先过熔断闸：熔断期间本地直接拒绝，不发任何网络请求。
+			if breakerKey != "" {
+				if ok, wait := loginCredBreaker.check(breakerKey, time.Now()); !ok {
+					return actool.Errorf(credCooldownMessage(wait)), nil
+				}
+			}
 			out := t.doHTTP(ctx, args, newJarStore(jarPath))
+			if breakerKey != "" {
+				loginCredBreaker.record(breakerKey, out.Status, time.Now())
+			}
 			if out.Err != nil {
 				return actool.Errorf(fmt.Sprintf("登录请求失败：%v（连接类错误先查 proxy_status，不要判目标封板）", out.Err)), nil
 			}
@@ -792,6 +862,12 @@ func (t *ToolSet) sessionLogin() actool.CoreTool {
 				"body_sha256":  out.SHA256,
 				"auth_source":  authKindLabel,
 				"auth_mode":    mode,
+			}
+			// 未熔断但有失败计数时给出剩余次数，引导模型换凭据而不是硬撞。
+			if breakerKey != "" {
+				if left := loginCredBreaker.remaining(breakerKey, time.Now()); left > 0 {
+					res["auth_attempts_left"] = left
+				}
 			}
 			if len(out.SetCookies) == 0 {
 				res["note"] = "响应没有 Set-Cookie：可能是 token 走响应体的系统（从 body 里取 token，再 http_request 用 Authorization 头），也可能登录失败（看 status/body）。"

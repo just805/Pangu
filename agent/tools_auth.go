@@ -243,10 +243,20 @@ func buildAuthCurl(rawURL, method, body, extraHeader string, e authEntry) (strin
 	}
 
 	if strings.TrimSpace(extraHeader) != "" {
+		// 多行头是显式设计（\n 分隔），但 \r 必须拒绝：curl 对 CR 的处理不可控，
+		// 且模型可能用它把一行头拆成两个（CWE-113）。逐行仍要过 validate。
+		if strings.ContainsRune(extraHeader, '\r') {
+			return "", fmt.Errorf("请求头不能包含回车符（\\r）：多行头请用 \\n 分隔")
+		}
 		for _, line := range strings.Split(extraHeader, "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
 				continue
+			}
+			// 模型可控头值过校验：控制字符会被 curl 拆成多个头（CWE-113），
+			// '@' 前缀会让 curl 读本地文件当头发出去（见 input_validate.go）。
+			if err := validateCurlHeaderValue(line); err != nil {
+				return "", err
 			}
 			parts = append(parts, "-H", q(line))
 		}

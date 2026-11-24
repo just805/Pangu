@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { api } from "@/lib/api";
-import type { Insights } from "@/lib/types";
+import type { BenchmarkSummary, Insights } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const trendConfig = {
@@ -26,6 +26,15 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
+function fmtPct(v: number): string {
+  return `${Math.round(v * 100)}%`;
+}
+
+function fmtDuration(min: number): string {
+  if (min >= 60) return `${(min / 60).toFixed(1)}h`;
+  return `${Math.round(min)}m`;
+}
+
 const RANGES = [
   { days: 7, label: "近 7 天" },
   { days: 30, label: "近 30 天" },
@@ -35,6 +44,7 @@ const RANGES = [
 export default function InsightsPage() {
   const [days, setDays] = React.useState(30);
   const [data, setData] = React.useState<Insights | null>(null);
+  const [bench, setBench] = React.useState<BenchmarkSummary | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState("");
 
@@ -46,6 +56,11 @@ export default function InsightsPage() {
       .then(setData)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : "加载洞察失败"))
       .finally(() => setLoading(false));
+    // 评测基线失败不拖垮洞察页主视图，单独静默处理。
+    api
+      .benchmark(range)
+      .then(setBench)
+      .catch(() => setBench(null));
   }, []);
 
   React.useEffect(() => {
@@ -150,6 +165,114 @@ export default function InsightsPage() {
           <CardContent className="text-[10px] text-muted-foreground">token / 每条有效漏洞</CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Agent 评测基线</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <p className="text-muted-foreground text-[11px]">
+            成功率 = 目标全部达成的任务占比；误报率 = 误报 / 漏洞；未验证率 = high/critical 中
+            「无证据文本且未绑流量」的占比。用于跨版本对比，以及判断 C5「出报告前自验证」是否加码。
+          </p>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+            <div className="rounded-lg border px-3 py-2">
+              <div className="text-[10px] text-muted-foreground">任务成功率</div>
+              <div className="font-semibold text-xl tabular-nums">
+                {bench ? fmtPct(bench.success_rate) : "—"}
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                {bench ? `${bench.success_count} / ${bench.task_count}` : "-"}
+              </div>
+            </div>
+            <div className="rounded-lg border px-3 py-2">
+              <div className="text-[10px] text-muted-foreground">漏洞误报率</div>
+              <div className="font-semibold text-xl tabular-nums">
+                {bench && bench.findings > 0 ? fmtPct(bench.false_positive_rate) : "—"}
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                {bench ? `${bench.false_positives} / ${bench.findings}` : "-"}
+              </div>
+            </div>
+            <div className="rounded-lg border px-3 py-2">
+              <div className="text-[10px] text-muted-foreground">高危未验证率</div>
+              <div className="font-semibold text-xl tabular-nums">
+                {bench && bench.findings > 0 ? fmtPct(bench.unverified_rate) : "—"}
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                {bench ? `${bench.unverified_high} 条 high/critical` : "-"}
+              </div>
+            </div>
+            <div className="rounded-lg border px-3 py-2">
+              <div className="text-[10px] text-muted-foreground">平均 token / 任务</div>
+              <div className="font-semibold text-xl tabular-nums">
+                {bench ? fmtTokens(Math.round(bench.avg_tokens)) : "—"}
+              </div>
+              <div className="text-[10px] text-muted-foreground">总 {bench ? fmtTokens(bench.total_tokens) : "-"}</div>
+            </div>
+            <div className="rounded-lg border px-3 py-2">
+              <div className="text-[10px] text-muted-foreground">平均时长 / 任务</div>
+              <div className="font-semibold text-xl tabular-nums">
+                {bench && bench.avg_duration_minutes > 0 ? fmtDuration(bench.avg_duration_minutes) : "—"}
+              </div>
+              <div className="text-[10px] text-muted-foreground">first_run → completed</div>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b text-muted-foreground">
+                  <th className="px-3 py-2 text-left font-medium">任务</th>
+                  <th className="px-3 py-2 text-right font-medium">目标</th>
+                  <th className="px-3 py-2 text-right font-medium">漏洞</th>
+                  <th className="px-3 py-2 text-right font-medium">误报</th>
+                  <th className="px-3 py-2 text-right font-medium">高危未验证</th>
+                  <th className="px-3 py-2 text-right font-medium">Token</th>
+                  <th className="px-3 py-2 text-right font-medium">时长</th>
+                  <th className="px-3 py-2 text-right font-medium">结果</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(bench?.tasks ?? []).map((t) => (
+                  <tr key={t.task_id} className="border-b last:border-0 hover:bg-muted/40">
+                    <td className="max-w-[260px] truncate px-3 py-2 font-medium" title={t.name || `#${t.task_id}`}>
+                      {t.name || `#${t.task_id}`}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {t.goals_met} / {t.goals_total}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">{t.findings}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{t.false_positives}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {t.unverified_high > 0 ? (
+                        <span className="text-orange-500">{t.unverified_high}</span>
+                      ) : (
+                        <span className="text-muted-foreground">0</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtTokens(t.tokens)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {t.duration_minutes > 0 ? fmtDuration(t.duration_minutes) : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <Badge variant={t.success ? "default" : "outline"}>
+                        {t.success ? "达成" : t.status}
+                      </Badge>
+                    </td>
+                  </tr>
+                ))}
+                {(bench?.tasks ?? []).length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
+                      {bench ? "所选窗口内没有任务。" : "评测基线暂不可用（后端接口未启用或加载失败）。"}
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="pb-2">

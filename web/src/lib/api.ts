@@ -23,6 +23,7 @@ import type {
   Audit,
   BatchCategoryItem,
   BatchControlItem,
+  BenchmarkSummary,
   ChatAttachment,
   CommandRecord,
   Company,
@@ -793,6 +794,14 @@ export const api = {
   // 任务证据附件：列表 / 下载地址（图片直链同源带 cookie，可直接当 img src）。
   taskArtifacts: (taskId: string) =>
     get<{ artifacts: TaskArtifact[] }>(`/tasks/${taskId}/artifacts`).then((r) => arr(r.artifacts)),
+  // 附件列表 + 当前配额（已用/上限），配额触顶时前端要提示删除入口。
+  taskArtifactsWithQuota: (taskId: string) =>
+    get<{ artifacts: TaskArtifact[]; quota?: { max_count: number; max_bytes: number } }>(
+      `/tasks/${taskId}/artifacts`,
+    ),
+  // 删除单个附件（配额触顶后的补救路径）；返回释放的字节数。
+  deleteTaskArtifact: (taskId: string, artifactId: number) =>
+    del<{ deleted: number; name: string; size_bytes: number }>(`/tasks/${taskId}/artifacts/${artifactId}`),
   artifactUrl: (taskId: string, artifactId: number) => `/api/tasks/${taskId}/artifacts/${artifactId}`,
   artifactsExportUrl: (taskId: string) => `/api/tasks/${taskId}/artifacts/export`,
   scanTaskArtifacts: (taskId: string) =>
@@ -825,6 +834,9 @@ export const api = {
   // 跨任务洞察（C4）：按天/企业聚合任务、严重度与 token 成本。
   insights: (days = 30, company?: number) =>
     get<Insights>(`/insights?days=${days}${company ? `&company=${company}` : ""}`),
+  // 评测基线：成功率 / 误报率 / 未验证率 / 成本 / 时长。taskIds 给定时固定标定集。
+  benchmark: (days = 90, taskIds?: number[]) =>
+    get<BenchmarkSummary>(`/eval/benchmark?days=${days}${taskIds?.length ? `&task_ids=${taskIds.join(",")}` : ""}`),
   // 客户端/二进制逆向（P0）：样本上传、静态 triage 与敏感信息候选。
   reverseSamples: (taskId: string) =>
     get<{ samples: ReverseSample[] }>(`/tasks/${encodeURIComponent(taskId)}/reverse/samples`).then((r) =>

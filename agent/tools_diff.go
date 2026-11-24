@@ -501,7 +501,10 @@ func (t *ToolSet) diffResponses() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf("写出差分脚本失败: " + err.Error()), nil
 			}
-			cmd := buildDiffScript(a, scriptPath, workDir)
+			cmd, err := buildDiffScript(a, scriptPath, workDir)
+			if err != nil {
+				return actool.Errorf("请求头校验失败: " + err.Error()), nil
+			}
 			return jsonResult(map[string]any{
 				"run_with_bash": cmd,
 				"script_path":   scriptPath,
@@ -604,9 +607,17 @@ const diffScriptName = "resp_diff.py"
 //   - 响应体落到**工作目录**下的文件（不是 /tmp——平台规约：中间产物不落 /tmp）。
 //   - 状态码由 curl 的 -w '%{http_code}' 拿到，作为脚本参数传入。
 //   - URL/认证头都做 POSIX 单引号转义——认证头里常带引号。
-func buildDiffScript(a diffArgs, scriptPath, workDir string) string {
+//
+// 认证头是模型生成的，进入 curl -H 前必须过 validateCurlHeaderValue：
+// 单引号只能防 shell 注入，防不了 CR/LF 拆头（CWE-113）和 `@file` 读本地文件。
+func buildDiffScript(a diffArgs, scriptPath, workDir string) (string, error) {
 	bodyA := filepath.Join(workDir, "resp_a_body")
 	bodyB := filepath.Join(workDir, "resp_b_body")
+	for _, h := range []string{a.HeaderA, a.HeaderB} {
+		if err := validateCurlHeaderValue(strings.TrimSpace(h)); err != nil {
+			return "", err
+		}
+	}
 	fetch := func(url, header, out string) string {
 		parts := []string{"curl", "-sS", "--max-time", "20", "-o", quoteShell(out), "-w", "%{http_code}", quoteShell(url)}
 		if strings.TrimSpace(header) != "" {
@@ -618,7 +629,7 @@ func buildDiffScript(a diffArgs, scriptPath, workDir string) string {
 		"S=$(%s) ; T=$(%s) ; python3 %s %s %s \"$S\" \"$T\"",
 		fetch(a.URLA, a.HeaderA, bodyA),
 		fetch(a.URLB, a.HeaderB, bodyB),
-		quoteShell(scriptPath), quoteShell(bodyA), quoteShell(bodyB))
+		quoteShell(scriptPath), quoteShell(bodyA), quoteShell(bodyB)), nil
 }
 
 // quoteShell 用 POSIX 单引号包裹一个值（内部单引号按 '\'' 转义）。

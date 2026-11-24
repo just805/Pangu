@@ -471,3 +471,23 @@ Vue/React 单页应用的 dist 产物常把 sourcemap 一起发上线——`.js.
 
 假点：`.map` 请求返回 200 但内容是 SPA fallback 的 HTML（不是 JSON）不算命中；
 `sources` 只有 webpack runtime 没有业务文件不算。
+
+## 平台工具自动化配方
+
+| 阶段 | 组合 | 产出 |
+|---|---|---|
+| 契约优先 | `api_contract` | OpenAPI/Swagger 全量接口，可能直接省掉静态枚举 |
+| 静态枚举 | `js_audit` + Grep 配方 | baseURL、`/api/**`、路由、密钥 |
+| 运行时补全 | `playwright-cli` + `http_probe` | 触发懒加载后的真实请求 |
+| 鉴权三道门 | `session_login`（A/B/匿名）+ `auth_request` | 权限矩阵 |
+| 差分验证 | `diff_responses` | 越权/字段泄露证据 |
+| 入库报告 | `record_fact` → `report_finding` | 可复现结论 |
+
+## 常见失败模式（自查）
+
+- 只抓首页请求就收工：SPA 懒加载/路由切换后的接口没触发（用 playwright 点开核心页面）；
+- baseURL 拼接错误：相对路径 + 运行时下发域名，静态清单要与抓包对照；
+- `.map` 假命中：200 但内容是 fallback HTML；
+- 参数只取静态默认值：漏掉条件联动/hidden params，标注「待触发」；
+- 鉴权矩阵只测一个身份：越权结论不可信；
+- 接口清单不入库：后续意图重复劳动，务必 `record_fact`/`insert_assets`。

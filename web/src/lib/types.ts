@@ -509,6 +509,47 @@ export interface Insights {
   companies: InsightCompany[];
 }
 
+// ---- 评测基线（Agent 能力度量）----
+// 只读聚合：成功率 / 误报率 / high-critical 未验证率 / token 成本 / 墙钟时长。
+export interface BenchmarkTask {
+  task_id: number;
+  name: string;
+  status: string;
+  goals_total: number;
+  goals_met: number;
+  success: boolean;
+  findings: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  false_positives: number;
+  confirmed: number;
+  unverified_high: number;
+  retest_reproduced: number;
+  retest_fixed: number;
+  tokens: number;
+  duration_minutes: number;
+}
+
+export interface BenchmarkSummary {
+  days: number;
+  from: string;
+  to: string;
+  task_count: number;
+  success_count: number;
+  success_rate: number;
+  findings: number;
+  false_positives: number;
+  false_positive_rate: number;
+  unverified_high: number;
+  unverified_rate: number;
+  total_tokens: number;
+  avg_tokens: number;
+  avg_duration_minutes: number;
+  tasks: BenchmarkTask[];
+}
+
 // ---- 客户端/二进制逆向分析（P0）----
 export interface ReverseSection {
   name: string;
@@ -1219,6 +1260,13 @@ export interface Settings {
   // 全局出口代理(http/https/socks5，可带 user:pass)，所有目标流量走它。开启流量捕获时作为
   // MITM 上游；关闭捕获时直接注入 agent 的 bash/WebFetch。空=直连。
   global_proxy?: string;
+  // 隐藏服务（Tor/I2P）：.onion/.i2p 按后缀走对应代理。
+  hidden_service_enabled?: boolean;
+  tor_proxy?: string;
+  i2p_proxy?: string;
+  hidden_service_timeout_seconds?: number;
+  hidden_service_retries?: number;
+  hidden_service_connect_timeout_seconds?: number;
   // 装机代理(http/https/socks5)，仅用于宿主工具安装时的 apt/curl/GitHub 下载。
   // 与目标流量代理、搜索代理、LLM 代理完全独立。空=直连。
   install_proxy?: string;
@@ -1247,6 +1295,9 @@ export interface Settings {
   // 意图级软预算（v0.4.28）：单意图累计 token 到顶注入收尾提醒（不杀进程）。
   intent_budget_enabled?: boolean; // 默认 true
   intent_budget_tokens?: number; // 默认 3000000，范围 500000–20000000
+  // 任务级预算网关（上游 0.4.101）：任务累计 token 达软阈值提醒、达硬阈值收尾。
+  task_budget_tokens?: number; // 0=关闭（默认），否则 1000000–500000000
+  task_budget_warn_pct?: number; // 软提醒阈值百分比，默认 80，范围 50–95
   // 证据逐字回验（v0.4.29）：off=关闭 / warn=只提示（默认）/ block=critical/high 无出处打回。
   finding_evidence_verify?: "off" | "warn" | "block";
   // 工具输出注入告警（v0.4.29）：命中高精度注入特征时提醒模型「当数据不当指令」。

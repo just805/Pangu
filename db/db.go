@@ -378,12 +378,14 @@ var builtinSkillVisibility = map[string][]string{
 	"pentest-output-standards": {"pentest", "worker"},
 	"src-acceptance":           {"planner", "pentest", "retester", "reporter", "worker"},
 	// 场景专项
-	"redteam-ops":              {"pentest", "worker"},
-	"redteam-opsec":            {"pentest", "worker"},
-	"cloud-attack-methods":     {"pentest", "worker"},
-	"active-directory-attack":  {"pentest", "worker"},
-	"ai-llm-app-attack":        {"pentest", "worker"},
-	"binary-mobile-reversing":  {"pentest", "worker"},
+	"redteam-ops":             {"pentest", "worker"},
+	"redteam-opsec":           {"pentest", "worker"},
+	"cloud-attack-methods":    {"pentest", "worker"},
+	"active-directory-attack": {"pentest", "worker"},
+	"ai-llm-app-attack":       {"pentest", "worker"},
+	"binary-mobile-reversing": {"pentest", "worker"},
+	// 微信小程序：取包/抓包/登录态/云开发/开放能力/43 类漏洞/报告（场景专项）。
+	"wechat-miniprogram":       {"planner", "pentest", "worker", "reporter"},
 	"smart-contract-audit":     {"pentest", "worker"},
 	"wireless-hardware-attack": {"pentest", "worker"},
 	// SRC 方法论库（48 篇知识库 + 11 篇规则）：规划者定方向、执行者查细节
