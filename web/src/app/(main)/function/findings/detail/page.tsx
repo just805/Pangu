@@ -10,7 +10,7 @@ import { ArrowLeftIcon, ArrowUpRightIcon, ChevronLeftIcon, ChevronRightIcon, Fil
 import { toast } from "sonner";
 
 import { CopyButton } from "@/components/copy-button";
-import { EvidenceView } from "@/components/evidence-view";
+import { EvidenceView, evidenceOneLine, normalizeEvidenceText } from "@/components/evidence-view";
 import { FindingRetestPanel } from "@/components/finding-retest-panel";
 import { FindingTrafficPanel } from "@/components/finding-traffic-panel";
 import { Markdown } from "@/components/markdown";
@@ -140,7 +140,7 @@ function FindingDetailInner() {
     );
   }
 
-  const title = finding.name || finding.vulnclass || "未分类";
+  const title = evidenceOneLine(finding.name) || finding.vulnclass || "未分类";
 
   return (
     <Tabs value={tab} onValueChange={setTab} className="flex flex-1 flex-col gap-0">
@@ -201,7 +201,9 @@ function FindingDetailInner() {
                   <CardTitle className="text-sm">摘要</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed">{finding.summary || "（无摘要）"}</p>
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed">
+                    {normalizeEvidenceText(finding.summary) || "（无摘要）"}
+                  </p>
                 </CardContent>
               </Card>
               {/* 现场截图（v0.4.9）：关键照片在详情页直接可见，不用翻 Word。

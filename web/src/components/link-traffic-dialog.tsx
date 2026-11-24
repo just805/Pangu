@@ -4,6 +4,7 @@ import * as React from "react";
 
 import { toast } from "sonner";
 
+import { evidenceOneLine } from "@/components/evidence-view";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -118,9 +119,9 @@ export function LinkTrafficDialog({
             >
               <span className="flex min-w-0 flex-col gap-1">
                 <span>
-                  #{f.finding_id ?? f.id} · {f.name || f.vulnclass}
+                  #{f.finding_id ?? f.id} · {evidenceOneLine(f.name) || f.vulnclass}
                 </span>
-                <span className="line-clamp-2 text-muted-foreground text-xs">{f.summary}</span>
+                <span className="line-clamp-2 text-muted-foreground text-xs">{evidenceOneLine(f.summary)}</span>
               </span>
             </Button>
           ))}

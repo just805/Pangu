@@ -14,8 +14,24 @@ import { cn } from "@/lib/utils";
 //   - ``` 围栏          → 代码块
 //   - '{' 开头的长行    → 尝试 JSON 美化（parse 失败原样），超长默认折叠到 12 行
 //   - 其余行            → 等宽段落（保留 curl 命令原样）
+// agent 有时把换行写成字面 "\n"（两个字符），整段证据挤成一行，页面上就是
+// 露着 "\n" 的文字墙。仅当字面 \n 比真实换行多时才还原，避免误伤 JSON 字符串
+// 里的合法转义。纯展示层归一化，不改存储数据。
+export function normalizeEvidenceText(text: string | null | undefined): string {
+  const src = text ?? "";
+  const literal = (src.match(/\\n/g) ?? []).length;
+  const real = (src.match(/\n/g) ?? []).length;
+  if (literal === 0 || literal <= real) return src;
+  return src.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+}
+
+// 列表单行预览：还原字面换行后把空白压成一行，避免 "\n" 字符直接露在标题/摘要里。
+export function evidenceOneLine(text: string | null | undefined): string {
+  return normalizeEvidenceText(text).replace(/\s+/g, " ").trim();
+}
+
 export function EvidenceView({ text, className }: { text: string; className?: string }) {
-  const blocks = React.useMemo(() => parseEvidence(text ?? ""), [text]);
+  const blocks = React.useMemo(() => parseEvidence(normalizeEvidenceText(text ?? "")), [text]);
   const [copied, setCopied] = React.useState(false);
 
   const copy = async () => {

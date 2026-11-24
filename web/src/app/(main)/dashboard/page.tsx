@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 
+import { evidenceOneLine } from "@/components/evidence-view";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, } from "@/components/ui/card";
@@ -933,7 +934,7 @@ export default function DashboardPage() {
                       )}
                     </div>
                     <div className="mt-0.5 line-clamp-2 text-[10px] text-muted-foreground leading-snug">
-                      {f.summary}
+                      {evidenceOneLine(f.summary)}
                     </div>
                   </div>
                   <span className="shrink-0 text-[9px] text-muted-foreground tabular-nums">{fmtRel(f.ts)}</span>

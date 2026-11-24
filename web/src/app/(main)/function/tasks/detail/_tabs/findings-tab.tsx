@@ -7,7 +7,7 @@ import Link from "next/link";
 import { ArrowDownIcon, ArrowUpIcon, ArrowUpRightIcon, ChevronRightIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { EvidenceView } from "@/components/evidence-view";
+import { EvidenceView, evidenceOneLine } from "@/components/evidence-view";
 import { StatusBadge } from "@/components/status-badge";
 import { FindingTrafficPanel } from "@/components/finding-traffic-panel";
 import { Badge } from "@/components/ui/badge";
@@ -66,14 +66,16 @@ function Row({
           <StatusBadge domain="severity" value={f.severity} dot />
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="truncate font-medium">{findingLabel(f)}</span>
+              <span className="truncate font-medium" title={findingLabel(f)}>
+                {evidenceOneLine(findingLabel(f))}
+              </span>
               {f.inherited && f.source_task_id && (
                 <Badge variant="outline" className="shrink-0">
                   来源 #{f.source_task_id} · 只读
                 </Badge>
               )}
             </div>
-            <span className="truncate text-muted-foreground text-xs">{f.summary}</span>
+            <span className="truncate text-muted-foreground text-xs">{evidenceOneLine(f.summary)}</span>
           </div>
         </button>
         <div className="flex flex-wrap items-center gap-2 pl-7 sm:pl-0">
@@ -153,9 +155,7 @@ function Row({
           ) : (
             <>
               <div className="mb-1 font-medium text-muted-foreground text-xs">证据 / PoC</div>
-              <pre className="overflow-auto whitespace-pre-wrap rounded-md border bg-background p-3 font-mono text-xs">
-                {f.evidence}
-              </pre>
+              <EvidenceView text={f.evidence} className="max-h-72 overflow-y-auto" />
             </>
           )}
         </div>

@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { evidenceOneLine } from "@/components/evidence-view";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1025,7 +1026,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             {taskFindings.slice(0, 6).map((f) => (
               <div key={f.id} className="flex items-center gap-2 text-sm">
                 <StatusBadge domain="severity" value={f.severity} dot />
-                <span className="min-w-0 flex-1 truncate">{f.summary}</span>
+                <span className="min-w-0 flex-1 truncate">{evidenceOneLine(f.summary)}</span>
               </div>
             ))}
             {taskFindings.length === 0 && <p className="text-muted-foreground text-sm">暂无发现</p>}
@@ -1465,7 +1466,7 @@ function TaskArtifactsCard({ taskId }: { taskId: string }) {
   }, [expanded, taskId]);
   const findingOptions = findings
     .filter((f) => f.finding_id && /^\d+$/.test(String(f.finding_id)))
-    .map((f) => ({ id: String(f.finding_id), label: `#${f.finding_id} ${f.name || f.vulnclass}` }));
+    .map((f) => ({ id: String(f.finding_id), label: `#${f.finding_id} ${evidenceOneLine(f.name) || f.vulnclass}` }));
   const toggleSelected = (id: number) =>
     setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
   const applyAssignment = async () => {

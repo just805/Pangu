@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 
 import { CopyButton } from "@/components/copy-button";
+import { EvidenceView, evidenceOneLine } from "@/components/evidence-view";
 import { Markdown } from "@/components/markdown";
 import { StatusBadge } from "@/components/status-badge";
 import {
@@ -205,14 +206,16 @@ export function FindingsTable({
                         href={`/function/findings/detail?id=${f.finding_id}`}
                         onClick={(e) => e.stopPropagation()}
                         className="truncate font-medium hover:text-primary hover:underline"
-                        title="查看发现详情"
+                        title={f.name || f.vulnclass || "未分类"}
                       >
-                        {f.name || f.vulnclass || "未分类"}
+                        {evidenceOneLine(f.name) || f.vulnclass || "未分类"}
                       </Link>
                     ) : (
-                      <span className="truncate font-medium">{f.name || f.vulnclass || "未分类"}</span>
+                      <span className="truncate font-medium" title={f.name || f.vulnclass || "未分类"}>
+                        {evidenceOneLine(f.name) || f.vulnclass || "未分类"}
+                      </span>
                     )}
-                    <span className="truncate text-muted-foreground text-xs">{f.summary}</span>
+                    <span className="truncate text-muted-foreground text-xs">{evidenceOneLine(f.summary)}</span>
                     <Badge variant="outline">流量证据 {f.traffic_count ?? 0} 条</Badge>
                   </div>
                 </TableCell>
@@ -315,7 +318,7 @@ export function FindingsTable({
                             <AlertDialogDescription className="break-words">
                               「
                               <span className="break-all">
-                                {f.name || f.vulnclass || f.summary || `#${f.finding_id}`}
+                                {evidenceOneLine(f.name) || f.vulnclass || evidenceOneLine(f.summary) || `#${f.finding_id}`}
                               </span>
                               」将被永久删除， 同时从发现列表、任务发现 Tab 与探索图中移除，此操作不可撤销。
                             </AlertDialogDescription>
@@ -399,9 +402,10 @@ export function FindingsTable({
                           </span>
                         )}
                       </div>
-                      <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-muted px-3 py-2 font-mono text-xs">
-                        {f.evidence}
-                      </pre>
+                      <EvidenceView
+                        text={f.evidence}
+                        className="max-h-96 overflow-y-auto rounded-md bg-muted px-3 py-2"
+                      />
 
                       {/* 详细报告(Markdown):展开时按 finding_id 懒加载,免进详情页即可查看。 */}
                       {f.finding_id && (
