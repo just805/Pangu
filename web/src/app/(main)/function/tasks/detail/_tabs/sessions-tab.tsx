@@ -54,9 +54,12 @@ import { usePollInterval } from "@/hooks/use-polling";
 import { useSideQuestions } from "@/hooks/use-side-questions";
 import { api, sseUrl } from "@/lib/api";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
+import { fmtTokens } from "@/lib/format";
 import { MOCK } from "@/lib/mock/enabled";
 import { isBtwCommand } from "@/lib/side-questions";
 import { taskAssetSourceLabel, taskAssetTypeLabel } from "@/lib/task-assets";
+import { PlannerSituationCard } from "./planner-situation-card";
+import { intentStatus, roleMeta, SessionItem } from "./session-list-parts";
 import type {
   Activity,
   ChatAttachment,
@@ -213,36 +216,10 @@ function mergeBySeq(current: Activity[], incoming: Activity[]): Activity[] {
   return [...bySeq.values()].sort((p, q) => p.seq - q.seq);
 }
 
-// statusIcon maps a session status to its icon. Worker terminal states are
-// distinct & color-coded: 完成(绿勾圈) / 取消停止(琥珀斜杠圈) / 出错(红叉圈) /
-// 步数耗尽(紫). running=蓝色转圈, pending(待领取)=灰时钟.
-function statusIcon(status: SessionStatus) {
-  switch (status) {
-    case "running": // 执行中
-      return <Loader2Icon className="size-3.5 animate-spin text-blue-500" />;
-    case "paused":
-      return <PauseIcon className="size-3.5 text-amber-500" />;
-    case "pending": // 待领取(open intent)
-      return <ClockIcon className="size-3.5 text-muted-foreground" />;
-    case "done": // 完成
-      return <CircleCheckIcon className="size-3.5 text-emerald-500" />;
-    case "stopped": // 取消/停止(被 planner 终止)
-      return <CircleSlashIcon className="size-3.5 text-amber-500" />;
-    case "blocked": // 出错
-      return <CircleXIcon className="size-3.5 text-red-500" />;
-    case "exhausted": // 步数耗尽(撞 max_turns)
-      return <ZapOffIcon className="size-3.5 text-violet-500" />;
-    case "deleted": // 用户假删除
-      return <CircleSlashIcon className="size-3.5 text-muted-foreground" />;
-  }
-}
+// statusIcon/roleMeta/intentStatus/SessionItem 已拆到 ./session-list-parts（批 2
+// 减负 2400 行单文件），经 import 使用。
 
-// fmtTokens renders a compact token count (1234 → 1.2k, 2_000_000 → 2M).
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
-  return String(n);
-}
+// fmtTokens 已下沉到 @/lib/format（R4：消除跨文件重复实现），本文件经 import 使用。
 
 const TokenMetrics = React.forwardRef<
   HTMLSpanElement,
@@ -284,12 +261,7 @@ function fmtDuration(ms: number): string {
   return `${h}h${String(m % 60).padStart(2, "0")}m`;
 }
 
-const roleMeta = {
-  mainagent: { label: "主 Agent", icon: UserIcon },
-  planner: { label: "规划 Planner", icon: BrainIcon },
-  worker: { label: "Workers", icon: RadioIcon },
-  system: { label: "系统审计", icon: HistoryIcon },
-} as const;
+// roleMeta（分组图标/标签）已拆到 ./session-list-parts。
 
 // The main-agent session is the interactive entry point of this tab and has no
 // dedicated backend "sessions" endpoint — it is a fixed UI affordance whose
@@ -350,27 +322,7 @@ function keyForSession(s: Session, taskId: string): string {
   return taskScopedKey(taskId, `intent:${s.intent_id}`);
 }
 
-// Map an exploration intent (TaskNode) state → a session status the UI renders.
-function intentStatus(state: string): SessionStatus {
-  switch (state) {
-    case "done":
-      return "done";
-    case "blocked":
-      return "blocked";
-    case "exhausted":
-      return "exhausted";
-    case "stopped":
-      return "stopped";
-    case "paused":
-      return "paused";
-    case "open": // 待领取，区别于执行中
-      return "pending";
-    case "deleted": // 用户假删除
-      return "deleted";
-    default: // running
-      return "running";
-  }
-}
+// intentStatus 已拆到 ./session-list-parts。
 
 // Derive worker sessions from running/open intents — there is no backend
 // sessions endpoint, so intents (≈ worker units) are the closest real source.
@@ -390,117 +342,7 @@ function intentToSession(n: TaskNode): Session {
   };
 }
 
-function SessionItem({
-  s,
-  active,
-  displayTitle,
-  hasPending,
-  unread,
-  tokens,
-  onClick,
-  onCancel,
-  controlling,
-  deleted,
-}: {
-  s: Session;
-  active: boolean;
-  displayTitle: string;
-  hasPending?: boolean;
-  unread?: number;
-  tokens?: TokenTotal;
-  onClick: () => void;
-  onCancel?: () => void;
-  controlling?: boolean;
-  deleted?: boolean;
-}) {
-  const icon = deleted ? (
-    <Trash2Icon className="size-3.5 text-destructive" />
-  ) : s.role === "worker" ? (
-    statusIcon(s.status)
-  ) : s.live ? (
-    <Loader2Icon className="size-3.5 animate-spin text-blue-500" />
-  ) : null;
-
-  const cancellable =
-    s.role === "worker" &&
-    !s.inherited &&
-    !deleted &&
-    // pending = 待领(open)意图;连同运行中/已暂停都允许删除。
-    (s.status === "running" || s.status === "paused" || s.status === "pending");
-  return (
-    <div
-      className={cn(
-        "group/session flex w-full items-center rounded-md transition-colors",
-        active ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
-      )}
-    >
-      <button
-        type="button"
-        onClick={onClick}
-        className="flex min-w-0 flex-1 items-center gap-1 px-2 py-1.5 text-left text-sm"
-      >
-        {icon ?? <span className="size-3.5 shrink-0" />}
-        {s.intent_id && (
-          <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground tabular-nums">
-            #{s.intent_id}
-          </span>
-        )}
-        {s.inherited && s.source_task_id && (
-          <Badge variant="outline" className="shrink-0">
-            来源 #{s.source_task_id}
-          </Badge>
-        )}
-        <span
-          className={cn("min-w-0 flex-1 truncate font-medium text-sm", deleted && "text-muted-foreground line-through")}
-        >
-          {displayTitle}
-        </span>
-        {deleted && (
-          <Badge variant="outline" className="shrink-0 border-destructive/40 text-destructive">
-            已删除
-          </Badge>
-        )}
-        {hasPending && <ShieldAlertIcon className="size-3.5 shrink-0 text-amber-500" />}
-        {/* 会话级 token 总量：一眼看出哪个 Agent 烧钱（i+o+cache 读，压缩格式）。 */}
-        {tokens && tokens.input_tokens + tokens.output_tokens + tokens.cache_read_tokens > 0 && (
-          <span
-            title={`输入 ${tokens.input_tokens.toLocaleString()} · 输出 ${tokens.output_tokens.toLocaleString()} · 缓存读 ${tokens.cache_read_tokens.toLocaleString()}`}
-            className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums"
-          >
-            {fmtTokens(tokens.input_tokens + tokens.output_tokens + tokens.cache_read_tokens)}
-          </span>
-        )}
-        {!active && unread ? (
-          <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-blue-500/15 px-1 font-medium text-[10px] text-blue-600 tabular-nums dark:text-blue-400">
-            {unread > 99 ? "99+" : unread}
-          </span>
-        ) : null}
-        {s.live && (
-          <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 font-medium text-[10px] text-blue-600 dark:text-blue-400">
-            <span className="size-1 animate-pulse rounded-full bg-blue-500" />
-            实时
-          </span>
-        )}
-      </button>
-      {cancellable && (
-        <div className="flex shrink-0 items-center gap-0.5 pr-1 opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover/session:opacity-100 sm:group-focus-within/session:opacity-100">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-xs"
-            onClick={onCancel}
-            disabled={controlling}
-            title="删除该意图（需填写原因，可选假删除/真删除）"
-            aria-label="删除该意图（需填写原因，可选假删除/真删除）"
-            className="text-destructive hover:text-destructive"
-          >
-            <Trash2Icon />
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
+// SessionItem 已拆到 ./session-list-parts。
 
 function truncateWorkerAssetLabel(value: string, maxChars = 30): string {
   const chars = Array.from(value.trim());
@@ -543,7 +385,7 @@ function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
   );
 }
 
-export function SessionsTab({ taskId }: { taskId: string }) {
+export function SessionsTab({ taskId, onJumpCoverage }: { taskId: string; onJumpCoverage?: () => void }) {
   const approvalFocus = useApprovalFocus({ taskId });
   const [selectedSessionId, setActiveId] = React.useState(MAIN_ID);
   const focusSession = React.useMemo<Session | undefined>(() => {
@@ -2102,6 +1944,13 @@ export function SessionsTab({ taskId }: { taskId: string }) {
               }}
               history={focusHistory}
             />
+            {/* planner 会话头部挂结构化态势卡：意图终态分布/方向产出率/主要发现/
+            活跃意图，30s 轮询；与覆盖图页签联动（此前这些是几千字长文本流）。 */}
+            {isPlanner && (
+              <div className="shrink-0 border-b px-3 py-2">
+                <PlannerSituationCard taskId={taskId} onJumpCoverage={onJumpCoverage} />
+              </div>
+            )}
             {/* Force Radix's internal viewport wrapper (display:table, sizes to content)
             to block so wide/unbreakable steps (long commands, code, URLs) can't blow
             out the width and defeat the truncation below — the transcript wraps to

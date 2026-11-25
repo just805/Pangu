@@ -1,0 +1,18 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/(main)/layout,_N_T_/(main)/system/layout,_N_T_/(main)/system/agents/layout,_N_T_/(main)/system/agents/detail/layout,_N_T_/(main)/system/agents/detail/page,_N_T_/system/agents/detail"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/!KG1haW4p/system/agents/detail/__PAGE__",
+    "/!KG1haW4p/system/agents/detail",
+    "/!KG1haW4p/system/agents",
+    "/!KG1haW4p/system",
+    "/!KG1haW4p",
+    "/_index",
+    "/_head"
+  ]
+}

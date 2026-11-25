@@ -1,0 +1,17 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/(main)/layout,_N_T_/(main)/system/layout,_N_T_/(main)/system/hostenv/layout,_N_T_/(main)/system/hostenv/page,_N_T_/system/hostenv"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/!KG1haW4p/system/hostenv/__PAGE__",
+    "/!KG1haW4p/system/hostenv",
+    "/!KG1haW4p/system",
+    "/!KG1haW4p",
+    "/_index",
+    "/_head"
+  ]
+}

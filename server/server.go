@@ -779,6 +779,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/task-archives/{id}", s.queueTaskArchiveDelete)
 	mux.HandleFunc("POST /api/task-archives/delete/batch", s.deleteTaskArchivesBatch)
 	mux.HandleFunc("GET /api/tasks/{id}/coverage", s.taskCoverage)
+	mux.HandleFunc("GET /api/tasks/{id}/planner-situation", s.plannerSituation)
 	mux.HandleFunc("GET /api/tasks/{id}/retest-candidates", s.taskRetestCandidates) // 批量复测候选+最新复测状态（v0.4.27）
 	mux.HandleFunc("GET /api/tasks/{id}/coverage-graph", s.taskCoverageGraph)
 	mux.HandleFunc("GET /api/tasks/{id}/attack-chain", s.taskAttackChain)

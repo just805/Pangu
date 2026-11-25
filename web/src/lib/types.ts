@@ -1047,6 +1047,16 @@ export interface SessionTokenUsage {
   cache_write_tokens: number;
 }
 
+// planner 态势卡（GET /api/tasks/{id}/planner-situation）：意图终态分布、方向
+// 产出率 top、主要发现与活跃意图的结构化视图。
+export interface PlannerSituation {
+  states: { state: string; count: number }[];
+  directions: { intent_id: number; state: string; summary: string; tokens: number }[];
+  severities: { severity: string; count: number }[];
+  actives: { intent_id: number; state: string; summary: string }[];
+  findings: number;
+}
+
 export interface BatchControlItem {
   id: string;
   ok: boolean;

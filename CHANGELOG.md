@@ -2,6 +2,21 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.24] - 2026-11-25
+
+### 新增（planner 态势卡片化 · 批 2）
+
+- **planner 会话头部结构化态势卡**：意图终态分布、方向产出率 Top 5（token 消耗
+  最大的终态意图——高消耗低产出的方向别续派）、确认发现严重度分布、正在推进的
+  意图清单。新端点 `GET /api/tasks/{id}/planner-situation`（DB 直接聚合，不依赖
+  agent 内部注入函数），30s 轮询 + 手动刷新 + 页面隐藏自动暂停。此前这些是几千字
+  长文本流在会话消息里。
+- **覆盖图联动**：态势卡「覆盖图」按钮直达「测试资产覆盖图」页签——态势与图不再
+  割裂两个页签各看各的。
+- **会话组件拆分**：`statusIcon`/`roleMeta`/`intentStatus`/`SessionItem` 等纯展示
+  件抽到 `session-list-parts.tsx`（sessions-tab.tsx 2437 行 → ~2290 行，拆分伴随
+  批次渐进进行）；`fmtTokens` 下沉 `lib/format.ts`（R4 顺带完成一半）。
+
 ## [0.1.23] - 2026-11-25
 
 ### 新增（任务详情「多 Agent 会话」体验优化 · 批 1）

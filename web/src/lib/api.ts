@@ -17,6 +17,7 @@ import type {
   AgentTrigger,
   ArchiveBatchItem,
   Asset,
+  PlannerSituation,
   AssetInterceptRule,
   AssetInterceptRuleInput,
   AttackChain,
@@ -960,6 +961,8 @@ export const api = {
     }));
   },
   activityDetail: (id: number, task?: string) => get<{ detail: string }>(`/exploration/activity/${id}${tq(task)}`),
+  // planner 态势结构化视图（态势卡 30s 轮询）。
+  plannerSituation: (task: string) => get<PlannerSituation>(`/tasks/${task}/planner-situation${tq(task)}`),
   // Reverse-paginated session history. session = "main" | "plan" | "intent:<id>".
   // before=0 → latest page; before=<id> → the older page ending before that id.
   // snapshotCursor is the TASK-level max id at query time — open the task SSE at
