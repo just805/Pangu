@@ -104,21 +104,14 @@ docker compose up -d      # → http://localhost:8787
 
 ### 3.2 截图
 
-**入口与态势**
+<img width="1111" height="593" alt="image" src="https://github.com/user-attachments/assets/1e3375f2-106f-4869-b413-6ab1fbe6e2b9" />
 
-| 首次启动初始化管理员，防爆破锁定 | 总览：任务 / 发现 / 资产 / Token 趋势 |
-| :---: | :---: |
-| (<img width="1111" height="593" alt="image" src="https://github.com/user-attachments/assets/1e3375f2-106f-4869-b413-6ab1fbe6e2b9" />
-) |<img width="1610" height="889" alt="image" src="https://github.com/user-attachments/assets/b79723ca-da00-4158-a157-5422ce5ee7de" />
-) |
+<img width="1610" height="889" alt="image" src="https://github.com/user-attachments/assets/b79723ca-da00-4158-a157-5422ce5ee7de" />
 
-**任务与目标**
+<img width="1619" height="406" alt="image" src="https://github.com/user-attachments/assets/bd40c670-5383-46e8-9135-88777a465694" />
 
-| 任务列表：进度与漏洞分布 | 任务详情：多 Agent 会话与规划态势 |
-| :---: | :---: |
-| <img width="1619" height="406" alt="image" src="https://github.com/user-attachments/assets/bd40c670-5383-46e8-9135-88777a465694" />
-) |(<img width="1628" height="932" alt="image" src="https://github.com/user-attachments/assets/7d6455c4-b25f-4db7-ae8c-172aa324a1ad" />
-) |
+<img width="1628" height="932" alt="image" src="https://github.com/user-attachments/assets/7d6455c4-b25f-4db7-ae8c-172aa324a1ad" />
+
 
 
 ### 3.3 近期新增页面（按菜单直达）
