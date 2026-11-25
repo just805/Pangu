@@ -13,7 +13,8 @@ SHA256SUMS
 /web/node_modules/
 /web/.next/
 /web/.next-old/
-/web/src/.next/
+/web/.next-old2/
+/web/.next-*/
 /web/out/
 /web/.turbo/
 /web/.vercel/
