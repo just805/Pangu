@@ -481,11 +481,20 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 不重复、不硬凑；但目标未达成、又有未覆盖且更深的打法时，该派就派。简洁、聚焦、高效。`
 
-func plannerSystem(goal, dataDir, workDir string) string {
+// hiddenServicePlannerGuidance planner 派单视角：.onion/.i2p 意图要串行、放宽
+// 超时、点名禁用 nuclei（nuclei 不走 Tor/I2P 分流，直连失败还泄露来源）。
+func hiddenServicePlannerGuidance(o HiddenServiceOptions) string {
+	if strings.TrimSpace(o.Tor) == "" && strings.TrimSpace(o.I2P) == "" {
+		return ""
+	}
+	return "\n\n**隐藏服务派单约束（.onion/.i2p 目标）**：意图里明确「串行探测、放宽超时（慢链路 30~120s 常态，一次超时不是下线证据）」；不要派 nuclei 类扫描意图（nuclei 不走 Tor/I2P 分流），让 worker 用 http_request / http_probe / Bash curl（带对应代理参数）。"
+}
+
+func plannerSystem(goal, dataDir, workDir string, hidden HiddenServiceOptions) string {
 	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
 	// 作业硬尾巴（v0.4.63）：漏洞覆盖矩阵/纵深优先 + 授权边界复核。
 	return body + artifactSpec(workDir) + coverageMatrixPlannerGuidance + scopeVerifyPlannerGuidance + execFacePlannerGuidance +
-		engagementFraming + impactOrchestrationGuidance
+		hiddenServicePlannerGuidance(hidden) + engagementFraming + impactOrchestrationGuidance
 }
 
 // Plan runs one planning round. emit, if non-nil, receives the planner's execution
@@ -553,7 +562,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// （worker 有注入所以从不报错，问题只在规划者/主 Agent 侧复现）。
 	tsx.SetRunDir(taskDir)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
-	sysBody := plannerSystem(goal, p.workDir, taskDir)
+	sysBody := plannerSystem(goal, p.workDir, taskDir, p.hiddenSvc)
 	if p.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
 	}

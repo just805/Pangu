@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -335,7 +336,9 @@ type httpOutcome struct {
 	Err         error
 }
 
-func (t *ToolSet) buildHTTPClient(jar http.CookieJar, follow, insecure bool, timeout time.Duration) (*http.Client, error) {
+// buildHTTPClient 组装工具级 HTTP 客户端。connectTimeout>0 时限制建连阶段
+// （TCP 拨号/代理握手）耗时——隐藏服务链路上，TLS 握手同样放大到该值。
+func (t *ToolSet) buildHTTPClient(jar http.CookieJar, follow, insecure bool, timeout, connectTimeout time.Duration) (*http.Client, error) {
 	tr := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          32,
@@ -350,6 +353,22 @@ func (t *ToolSet) buildHTTPClient(jar http.CookieJar, follow, insecure bool, tim
 		if err := proxyprobe.ConfigureTransport(tr, t.egressProxy, t.hidden); err != nil {
 			return nil, fmt.Errorf("出口代理解析失败: %w", err)
 		}
+	}
+	if connectTimeout > 0 {
+		// 包在 ConfigureTransport 的拨号器（可能是 Tor SOCKS）外面：ctx 超时同时
+		// 限住本地拨号与 SOCKS 握手到远端——真正的慢在 SOCKS 握手，这正是要限的。
+		inner := tr.DialContext
+		dialer := &net.Dialer{Timeout: connectTimeout, KeepAlive: 30 * time.Second}
+		if inner == nil {
+			tr.DialContext = dialer.DialContext
+		} else {
+			tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				cctx, cancel := context.WithTimeout(ctx, connectTimeout)
+				defer cancel()
+				return inner(cctx, network, addr)
+			}
+		}
+		tr.TLSHandshakeTimeout = connectTimeout
 	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}
 	if t.egressCA != "" {
@@ -459,7 +478,13 @@ func (t *ToolSet) doHTTP(ctx context.Context, a httpArgs, jar http.CookieJar) ht
 	if a.Insecure != nil {
 		insecure = *a.Insecure
 	}
-	client, err := t.buildHTTPClient(jar, follow, insecure, time.Duration(timeout)*time.Second)
+	// 建连超时：隐藏服务链路默认值放大（hiddenConnectTimeout，如 Tor 单跳握手
+	// 常规 10s 不够）；普通目标保持旧行为（不单独限建连，走总超时）。
+	var connectTimeout time.Duration
+	if isHidden && t.hiddenConnectTimeout > 0 {
+		connectTimeout = t.hiddenConnectTimeout
+	}
+	client, err := t.buildHTTPClient(jar, follow, insecure, time.Duration(timeout)*time.Second, connectTimeout)
 	if err != nil {
 		out.Err = err
 		return out
@@ -620,7 +645,7 @@ func (t *ToolSet) httpRequest() actool.CoreTool {
 			"session":          str("会话名：复用任务级 cookie jar（可选）"),
 			"follow_redirects": map[string]any{"type": "boolean", "description": "是否跟随重定向，默认 true"},
 			"insecure":         map[string]any{"type": "boolean", "description": "跳过 TLS 校验，默认 true（对齐 curl -k）"},
-			"timeout":          intp("超时秒数，默认 20，最大 120"),
+			"timeout":          intp("超时秒数，默认 20，最大 120；.onion/.i2p 目标默认与上限自动放宽（上限 600），慢链路无需手调大"),
 			"max_body_chars":   intp("正文内联片段上限（字符），默认 6000，最大 32000"),
 			"basic_auth":       str("Basic 认证 user:pass（可选）"),
 		}, "url"),

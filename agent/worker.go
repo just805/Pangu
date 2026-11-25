@@ -331,6 +331,29 @@ func egressProxyGuidance(proxyAddr string) string {
 		"工具不支持环境变量时用其代理参数引用 $EGRESS_PROXY（如 ${EGRESS_PROXY:+-proxy \"$EGRESS_PROXY\"}，未配置时不发射空参数）。"
 }
 
+// hiddenServiceGuidance 告知 worker 隐藏服务（.onion/.i2p）的流量特性与工具边界。
+// 仅在配置了 Tor/I2P 时注入——内容引用具体代理地址，模型手工 curl 才有可执行的
+// 参数。 nuclei/WebFetch 不支持多代理分流是硬边界，必须明示（否则模型对 .onion
+// 目标照抄 nuclei 示例，请求从平台真实 IP 直连失败甚至泄露来源）。
+func hiddenServiceGuidance(o HiddenServiceOptions) string {
+	tor := strings.TrimSpace(o.Tor)
+	i2p := strings.TrimSpace(o.I2P)
+	if tor == "" && i2p == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n**隐藏服务（Tor/I2P）流量特性**：\n")
+	if tor != "" {
+		b.WriteString("- `.onion` 目标：http_request / http_probe 已自动走 Tor（" + tor + "），超时/重试按配置放宽；Bash 手写 curl 必须自己带 `--proxy '" + tor + "'`（socks5h 让 DNS 也走 Tor）\n")
+	}
+	if i2p != "" {
+		b.WriteString("- `.i2p` 目标：http_request / http_probe 已自动走 I2P HTTP 网关（" + i2p + "）；Bash 手写 curl 同样要 `--proxy '" + i2p + "'`\n")
+	}
+	b.WriteString("- nuclei 与 WebFetch **不走** Tor/I2P 分流——对 .onion/.i2p 目标不要用 nuclei，改用 http_request / http_probe / Bash curl\n")
+	b.WriteString("- 隐藏链路延迟高（单请求 30~120s 很常见）：**串行探测、禁止并发轰**；超时已自动放宽，一次超时不要直接判目标下线，先重试")
+	return b.String()
+}
+
 // ensureRunDir builds and creates an agent's working directory under base:
 // <base>/tasks/<taskID> for planner/main; <base>/tasks/<taskID>/i<intentID> for a
 // worker (intentID<=0 → task dir only). The "tasks/" segment groups per-task dirs
@@ -348,13 +371,13 @@ func ensureRunDir(base string, taskID, intentID int64) string {
 // cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
 func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
-func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
+func workerSystem(proxyAddr, caCert, dataDir, runDir string, hidden HiddenServiceOptions) string {
 	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
 	// 作业硬尾巴（v0.4.63）：扫描器优先 + 技能路由，代码注入不可经 UI 改掉。
-	out := body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + egressProxyGuidance(proxyAddr) + scannerFirstGuidance + skillRoutingGuidance + execFaceWorkerGuidance +
+	out := body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + egressProxyGuidance(proxyAddr) + hiddenServiceGuidance(hidden) + scannerFirstGuidance + skillRoutingGuidance + execFaceWorkerGuidance +
 		engagementFraming + impactVerificationGuidance
 	// 宿主工具清单：真正动手的是 worker，所以清单必须进 worker 的 system prompt。
 	// 之前只有 planner 的唤醒提示里有（用于「派意图选手段」），worker 看不到——
@@ -548,7 +571,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 血缘、意图 token 台账、coverage、related_tasks 等）不进 worker 视图，省掉每次
 	// 启动的重建计算与注入前缀。worker 只需要「别人发现了什么」做去重与联想。
 	overview := renderWorkerGraphOverview(tsx.workerOverviewData())
-	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir)
+	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir, w.hiddenSvc)
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
