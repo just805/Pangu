@@ -49,6 +49,36 @@ func estimateUSDCost(model string, inTok, outTok int) (usd float64, known bool) 
 	return 0, false
 }
 
+// loadProfilePrices 读取各通道的自定义单价（M-15）：profile_name → {in, out}。
+// 只收录声明了价格的通道——未声明的回退内置参考价。查询失败返回空表，
+// 成本核算退化为旧的「纯内置价」，不会因为一次读失败就没有成本视图。
+func (s *Server) loadProfilePrices() map[string][2]float64 {
+	out := map[string][2]float64{}
+	pg := s.m.PG()
+	if pg == nil {
+		return out
+	}
+	profiles, err := pg.ListProfiles()
+	if err != nil {
+		return out
+	}
+	for _, p := range profiles {
+		if p.InputPricePerMTok > 0 || p.OutputPricePerMTok > 0 {
+			out[p.Name] = [2]float64{p.InputPricePerMTok, p.OutputPricePerMTok}
+		}
+	}
+	return out
+}
+
+// priceUsage 决定一行用量用哪个价：通道自定义价优先（自有网关/中转站的实际折扣
+// 只有用户自己填的才准），否则回退内置参考价。两者都没有时 known=false。
+func priceUsage(prices map[string][2]float64, profileName, model string, inTok, outTok int) (usd float64, known bool) {
+	if p, ok := prices[profileName]; ok {
+		return (float64(inTok)*p[0] + float64(outTok)*p[1]) / 1e6, true
+	}
+	return estimateUSDCost(model, inTok, outTok)
+}
+
 // profileCost 是按 profile 聚合的成本视图。
 type profileCost struct {
 	ProfileName  string  `json:"profile_name"`
@@ -73,12 +103,13 @@ func (s *Server) pgUsageCost(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
+		prices := s.loadProfilePrices()
 		var total db.TaskUsage
 		total.TaskID = task
 		var cost float64
 		unpriced := map[string]bool{}
 		for _, row := range rows {
-			c, known := estimateUSDCost(row.Model, row.InputTokens, row.OutputTokens)
+			c, known := priceUsage(prices, row.ProfileName, row.Model, row.InputTokens, row.OutputTokens)
 			cost += c
 			if !known {
 				unpriced[row.Model] = true
@@ -91,7 +122,7 @@ func (s *Server) pgUsageCost(w http.ResponseWriter, r *http.Request) {
 			"task":            total,
 			"cost_usd":        round4(cost),
 			"unpriced_models": keysOf(unpriced),
-			"pricing_note":    "按内置参考价估算（USD/百万 token），仅用于相对对比，不承诺账单精度；不含已归档任务。",
+			"pricing_note":    "优先按各通道自定义单价（LLM 配置页填写，USD/百万 token）；未填的回退内置参考价。仅用于相对对比，不承诺账单精度；不含已归档任务。",
 		})
 		return
 	}
@@ -101,12 +132,13 @@ func (s *Server) pgUsageCost(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	prices := s.loadProfilePrices()
 	byProfile := map[string]*profileCost{}
 	var totalIn, totalOut int
 	var totalCost float64
 	unpriced := map[string]bool{}
 	for _, row := range rows {
-		c, known := estimateUSDCost(row.Model, row.InputTokens, row.OutputTokens)
+		c, known := priceUsage(prices, row.ProfileName, row.Model, row.InputTokens, row.OutputTokens)
 		if !known {
 			unpriced[row.Model] = true
 		}
@@ -137,7 +169,7 @@ func (s *Server) pgUsageCost(w http.ResponseWriter, r *http.Request) {
 		},
 		"by_profile":      out,
 		"unpriced_models": keysOf(unpriced),
-		"pricing_note":    "按内置参考价估算（USD/百万 token），仅用于相对对比，不承诺账单精度；不含已归档任务。",
+		"pricing_note":    "优先按各通道自定义单价（LLM 配置页填写，USD/百万 token）；未填的回退内置参考价。仅用于相对对比，不承诺账单精度；不含已归档任务。",
 	})
 }
 

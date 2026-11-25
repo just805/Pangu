@@ -249,3 +249,11 @@ func Available() (soffice, pdftoppm bool) {
 	_, err2 := findPdftoppm()
 	return err1 == nil, err2 == nil
 }
+
+// ConvertToPDF 把一个 Office/ODF 文档转成 PDF，返回 PDF 文件路径。
+//
+// 供报告导出 PDF 复用同一套 LibreOffice 转换（M-10）：不引第三方文档库，
+// 与文档预览走同一条链路。调用方负责创建/清理 outDir。
+func ConvertToPDF(ctx context.Context, src, outDir string) (string, error) {
+	return officeToPDF(ctx, src, outDir)
+}

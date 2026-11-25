@@ -212,6 +212,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
 	// override row, agents keep their built-in defaults — behavior is unchanged.
 	if m.pg != nil {
+		// 周期任务调度（M-06）：只新建任务，永不触发复测。
+		s.startScheduleLoop()
 		agent.PromptOverride = func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil {
@@ -768,6 +770,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/task-templates", s.pgCreateTaskTemplate)
 	mux.HandleFunc("PATCH /api/task-templates/{id}", s.pgUpdateTaskTemplate)
 	mux.HandleFunc("DELETE /api/task-templates/{id}", s.pgDeleteTaskTemplate)
+	// 周期任务调度（M-06）：只新建侦察类任务；不触发复测。
+	mux.HandleFunc("GET /api/schedules", s.listSchedules)
+	mux.HandleFunc("POST /api/schedules", s.createSchedule)
+	mux.HandleFunc("PATCH /api/schedules/{id}", s.updateSchedule)
+	mux.HandleFunc("DELETE /api/schedules/{id}", s.deleteSchedule)
+	mux.HandleFunc("POST /api/schedules/{id}/run", s.runScheduleNow)
+	// 开放 API 凭证（M-12）：同一管理员账号下的程序化凭证，不是多用户。
+	mux.HandleFunc("GET /api/api-keys", s.listAPIKeys)
+	mux.HandleFunc("POST /api/api-keys", s.createAPIKey)
+	mux.HandleFunc("DELETE /api/api-keys/{id}", s.deleteAPIKey)
 	mux.HandleFunc("GET /api/tasks/{id}", s.getTask)
 	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTaskMetadata)
 	mux.HandleFunc("PATCH /api/tasks/{id}/category", s.updateTaskCategory)
@@ -849,6 +861,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/assets/counts", s.assetCounts)
 	mux.HandleFunc("POST /api/assets", s.insertAssets)
 	mux.HandleFunc("DELETE /api/assets", s.deleteAssets)
+	// 资产快照与变更检测（M-07）：采快照 / 列快照 / 比较两次快照。
+	mux.HandleFunc("POST /api/assets/snapshots", s.takeAssetSnapshot)
+	mux.HandleFunc("GET /api/assets/snapshots", s.listAssetSnapshots)
+	mux.HandleFunc("GET /api/assets/snapshots/{id}/diff", s.assetSnapshotDiff)
 
 	// company system
 	mux.HandleFunc("GET /api/companies", s.listCompanies)
@@ -943,6 +959,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/report/summary", s.reportSummaryPut)
 	mux.HandleFunc("POST /api/report/summary", s.reportSummaryGenerate)
 	mux.HandleFunc("GET /api/report/export", s.exportTaskDocx)
+	// 报告多格式（M-10）：Excel 漏洞清单 + PDF（依赖宿主 LibreOffice）。
+	mux.HandleFunc("GET /api/report/export.xlsx", s.exportTaskFindingsXLSX)
+	mux.HandleFunc("GET /api/report/export.pdf", s.exportTaskPDF)
+	// 报告模板（M-10）：页眉/密级/委托方覆盖 + 章节开关。
+	mux.HandleFunc("GET /api/report-templates", s.listReportTemplates)
+	mux.HandleFunc("POST /api/report-templates", s.createReportTemplate)
+	mux.HandleFunc("PATCH /api/report-templates/{id}", s.updateReportTemplate)
+	mux.HandleFunc("DELETE /api/report-templates/{id}", s.deleteReportTemplate)
+	mux.HandleFunc("POST /api/report-templates/{id}/default", s.setDefaultReportTemplate)
+	// MCP 服务端出口（M-13）：把平台只读能力暴露给外部 Agent（JWT / API Key 均可）。
+	// 注意与 /api/mcp（MCP 客户端配置 CRUD）区分：这里是对外的服务端端点。
+	mux.HandleFunc("POST /api/mcp/server", s.mcpEndpoint)
+	// 回归评测靶场（M-14）：标准答案 CRUD + 按答案判卷。
+	mux.HandleFunc("GET /api/eval/benchmarks", s.listEvalBenchmarks)
+	mux.HandleFunc("POST /api/eval/benchmarks", s.createEvalBenchmark)
+	mux.HandleFunc("DELETE /api/eval/benchmarks/{id}", s.deleteEvalBenchmark)
+	mux.HandleFunc("POST /api/eval/benchmarks/{id}/score", s.scoreEvalBenchmark)
 	mux.HandleFunc("GET /api/findings/{id}/export", s.exportFindingDocx)
 	mux.HandleFunc("GET /api/tools/inventory", s.toolsInventory)
 	// 宿主环境:体检(含一键安装可用性)+ 一键安装(经特权助手 pangu-hostd)

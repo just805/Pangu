@@ -57,6 +57,18 @@ type TaskDocxInput struct {
 	ReverseSecrets map[int64][]db.ReverseSecret
 	// Coverage 任务资产覆盖（P0-1）：范围内资产 vs 已触达；nil = 省略该节。
 	Coverage *db.Coverage
+	// Sections 是章节开关（M-10，来自报告模板）：缺省键=显示，false=跳过。
+	// 只有报告模板显式关闭时才跳过——历史行为（无模板）完全不变。
+	Sections map[string]bool
+}
+
+// chapterEnabled 判断某章节是否渲染：无模板配置（nil）= 显示。
+func chapterEnabled(sections map[string]bool, key string) bool {
+	if sections == nil {
+		return true
+	}
+	v, ok := sections[key]
+	return !ok || v
 }
 
 func sevRankKey(f *db.DBFinding) int {
@@ -113,7 +125,7 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 	d.PageBreak()
 
 	// ── 执行摘要（A13）：管理层风险结论，LLM 聚合 + 可人工修订；空则省略 ──
-	if strings.TrimSpace(in.ExecSummary) != "" {
+	if chapterEnabled(in.Sections, "exec_summary") && strings.TrimSpace(in.ExecSummary) != "" {
 		d.H1("执行摘要")
 		summary := strings.ReplaceAll(normalizeLiteralNewlines(in.ExecSummary), "\r\n", "\n")
 		for _, line := range strings.Split(summary, "\n") {
@@ -227,25 +239,44 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 		"critical/high 级发现建议按复测记录进行独立复验。")
 	d.P("严重度评定参照 CVSS v3.1 结合业务影响人工校准;修复优先级建议见第四章。")
 	// ── 覆盖与排除（P0-1 最小版）：范围/已触达/未触达按资产类型呈现 ──
-	if cov := in.Coverage; cov != nil && cov.ScopeRows > 0 && cov.Denominator > 0 {
+	// M-04 扩展：即使没配测试范围，只要有「已排除 / 未验证」的三态结论也要出这一节，
+	// 否则最该被回答的问题（哪些方向排掉了、依据是什么）反而无处呈现。
+	cov := in.Coverage
+	if chapterEnabled(in.Sections, "coverage") && cov != nil && ((cov.ScopeRows > 0 && cov.Denominator > 0) || len(cov.Excluded) > 0 || cov.OpenProofGaps > 0) {
 		d.H2("覆盖与排除")
-		pct := "—"
-		if cov.Pct != nil {
-			pct = fmt.Sprintf("%.0f%%", *cov.Pct*100)
-		}
-		d.P(fmt.Sprintf("任务范围共 %d 条资产，已触达约 %d 条（覆盖率 %s）。"+
-			"「已触达」指该资产在本任务中至少产生过一条可核验结论（事实/漏洞/流量）；"+
-			"未触达不代表没有漏洞，只表示本次未在该资产上形成结论。", cov.Denominator, cov.Tested, pct))
-		rows := make([][]string, 0, len(cov.ByType))
-		for _, bt := range cov.ByType {
-			state := "未触达"
-			if bt.Tested > 0 {
-				state = "已触达"
+		if cov.ScopeRows > 0 && cov.Denominator > 0 {
+			pct := "—"
+			if cov.Pct != nil {
+				pct = fmt.Sprintf("%.0f%%", *cov.Pct*100)
 			}
-			rows = append(rows, []string{assetTypeCN(bt.Type), fmt.Sprint(bt.Total), fmt.Sprint(bt.Tested), state})
+			d.P(fmt.Sprintf("任务范围共 %d 条资产，已触达约 %d 条（覆盖率 %s）。"+
+				"「已触达」指该资产在本任务中至少产生过一条可核验结论（事实/漏洞/流量）；"+
+				"未触达不代表没有漏洞，只表示本次未在该资产上形成结论。", cov.Denominator, cov.Tested, pct))
+			rows := make([][]string, 0, len(cov.ByType))
+			for _, bt := range cov.ByType {
+				state := "未触达"
+				if bt.Tested > 0 {
+					state = "已触达"
+				}
+				rows = append(rows, []string{assetTypeCN(bt.Type), fmt.Sprint(bt.Total), fmt.Sprint(bt.Tested), state})
+			}
+			if len(rows) > 0 {
+				d.Table([]string{"资产类型", "范围内", "已触达", "状态"}, rows)
+			}
 		}
-		if len(rows) > 0 {
-			d.Table([]string{"资产类型", "范围内", "已触达", "状态"}, rows)
+		// 三态收口（M-04）：已排除方向带控制点，未验证单独计数——两者都不是
+		// 「没问题」，区别在于排除有证据、未验证没有。
+		if len(cov.Excluded) > 0 {
+			d.P(fmt.Sprintf("本次测试明确排除了 %d 个方向，均附拦截控制点与证据：", len(cov.Excluded)))
+			rows := make([][]string, 0, len(cov.Excluded))
+			for _, e := range cov.Excluded {
+				rows = append(rows, []string{clipRunes(e.Summary, 80), nz(e.ControlPoint, "—")})
+			}
+			d.Table([]string{"已排除方向", "拦截控制点"}, rows)
+		}
+		if cov.OpenProofGaps > 0 {
+			d.P(fmt.Sprintf("另有 %d 个方向做了探测但证据不足以定论，记为「未验证」——未验证不等于无风险，"+
+				"建议在下一轮测试中补齐关键证据。", cov.OpenProofGaps))
 		}
 		d.P("排除说明：范围外的资产、第三方 CDN/静态库与目标外域名不在本次测试范围内；" +
 			"范围调整记录见平台任务详情的「测试范围」页。")
@@ -262,6 +293,10 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 			// 超链接或报错提示，正式报告观感很差；严重度已在方括号里标明。
 			d.H3(fmt.Sprintf("3.%d.%d [%s] %s", gi+1, fi+1, SeverityCN(f.Severity), findingTitle(f)))
 			d.Meta("漏洞类别", nz(f.VulnClass, "未分类"))
+			// CVSS（M-11）：向量由 Agent 提供、分数由平台计算——报告里给出确定性依据。
+			if f.CVSSScore != nil {
+				d.Meta("CVSS", fmt.Sprintf("%.1f  %s", *f.CVSSScore, nz(f.CVSSVector, "")))
+			}
 			if len(f.AssetIDs) > 0 {
 				d.Meta("影响资产", assetNames(f.AssetIDs, in.AssetNames))
 			}
@@ -291,21 +326,25 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 	d.PageBreak()
 
 	// ── 四、攻击路径（C2：从初始访问到最终影响的链路叙事，每步带证明点）──
-	d.H1("四、攻击路径")
-	writeAttackChainDocx(d, in.AttackChain, in.AssetNames)
-	d.PageBreak()
+	if chapterEnabled(in.Sections, "attack_chain") {
+		d.H1("四、攻击路径")
+		writeAttackChainDocx(d, in.AttackChain, in.AssetNames)
+		d.PageBreak()
+	}
 
 	// ── 五、客户端/二进制分析（P0：静态 triage + 秘密扫描）──
-	d.H1("五、客户端/二进制分析")
-	writeReverseChapterDocx(d, in.ReverseSamples, in.ReverseSecrets)
-	d.PageBreak()
+	if chapterEnabled(in.Sections, "reverse") {
+		d.H1("五、客户端/二进制分析")
+		writeReverseChapterDocx(d, in.ReverseSamples, in.ReverseSecrets)
+		d.PageBreak()
+	}
 
 	// ── 六、修复优先级路线图（A15：立即/计划/择机三档）──
 	d.H1("六、修复优先级路线图")
 	writeRemediationRoadmap(d, in.Findings)
 
 	// ── 附录 A：资产清单（A16）──
-	if len(in.AppendixAssets) > 0 {
+	if chapterEnabled(in.Sections, "appendices") && len(in.AppendixAssets) > 0 {
 		d.PageBreak()
 		d.H1("附录 A 资产清单")
 		types := make([]string, 0, len(in.AppendixAssets))
@@ -803,6 +842,16 @@ func countSev(fs []*db.DBFinding, sev string) int {
 		}
 	}
 	return n
+}
+
+// clipRunes 按字符截断，中文不会被按字节切断。只用于报告表格里的摘要。
+func clipRunes(s string, max int) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
 
 // assetTypeCN 资产类型中文(概览表用)。

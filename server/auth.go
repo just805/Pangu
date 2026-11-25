@@ -366,6 +366,24 @@ func verifyJWT(tokenStr string, key []byte) bool {
 // X-Forwarded 头与浏览器历史/Referer，一个 7 天有效的 JWT 留在别人的日志里是
 // 实打实的会话劫持面。现在 EventSource 走 HttpOnly cookie（同源请求浏览器自动
 // 携带，cookie 不区分端口，dev 的 :3000→:8787 同样适用），query 通道整体移除。
+// apiKeyAllowed 校验开放 API 凭证（M-12）。优先 X-API-Key 头，其次
+// Authorization: Bearer pk_…（CI/脚本常见写法）。查询失败 fail-closed。
+func (s *Server) apiKeyAllowed(r *http.Request) bool {
+	if s.m == nil || s.m.pg == nil {
+		return false
+	}
+	raw := strings.TrimSpace(r.Header.Get("X-API-Key"))
+	if raw == "" {
+		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer pk_") {
+			raw = strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+		}
+	}
+	if raw == "" {
+		return false
+	}
+	return s.m.pg.VerifyAPIKey(r.Context(), raw)
+}
+
 func extractToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
@@ -430,11 +448,23 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 		}
 		tok := extractToken(r)
 		if tok == "" {
+			// 开放 API 凭证（M-12）：X-API-Key 头。与 JWT 走完全相同的下游——
+			// 任务创建、拦截审批、范围守卫一个不少。它不是多用户，只是同一管理员
+			// 账号的程序化调用方式。
+			if s.apiKeyAllowed(r) {
+				h.ServeHTTP(w, r)
+				return
+			}
 			writeErr(w, 401, "未授权")
 			return
 		}
 		claims, ok := parseSessionJWT(tok, s.currentJWTKey())
 		if !ok {
+			// 兼容把 Key 放进 Authorization: Bearer 的调用方（CI 常见写法）。
+			if s.apiKeyAllowed(r) {
+				h.ServeHTTP(w, r)
+				return
+			}
 			writeErr(w, 401, "token 无效或已过期")
 			return
 		}

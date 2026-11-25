@@ -6,6 +6,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/just805/pangu/db"
+	"github.com/just805/pangu/docpreview"
 	"github.com/just805/pangu/report"
 )
 
@@ -140,7 +142,7 @@ func (s *Server) assembleTaskReport(ctx context.Context, t *Task) (report.TaskDo
 	// 资产覆盖（P0-1）：范围内 vs 已触达；失败时留空，报告省略该节。
 	covTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
 	cov, _ := s.m.Assets().TaskCoverage(covTaskID, t.Store.ID())
-	return report.TaskDocxInput{
+	in := report.TaskDocxInput{
 		Title:          fmt.Sprintf("渗透测试报告 — %s", t.Description),
 		Goal:           t.Goal,
 		GeneratedAt:    time.Now(),
@@ -160,7 +162,21 @@ func (s *Server) assembleTaskReport(ctx context.Context, t *Task) (report.TaskDo
 		ReverseSamples: reverseSamples,
 		ReverseSecrets: reverseSecrets,
 		Coverage:       cov,
-	}, nil
+	}
+	// 报告模板（M-10）：没有配置默认模板时行为完全不变（沿用上面的内置取值）。
+	if tpl, tplErr := s.m.pg.ReportTemplates().Default(ctx); tplErr == nil && tpl != nil {
+		if strings.TrimSpace(tpl.PageHeader) != "" {
+			in.PageHeader = tpl.PageHeader
+		}
+		if strings.TrimSpace(tpl.Classification) != "" {
+			in.Classification = tpl.Classification
+		}
+		if strings.TrimSpace(tpl.CustomerOverride) != "" {
+			in.Customer = tpl.CustomerOverride
+		}
+		in.Sections = tpl.Sections
+	}
+	return in, nil
 }
 
 // cveIntelFor 批量查情报库做 A11 富化：从 name/vulnclass/summary 提取 CVE 编号
@@ -224,6 +240,87 @@ func (s *Server) exportTaskDocx(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", attachmentDisposition(name))
 	w.WriteHeader(200)
 	_ = doc.Encode(w)
+}
+
+// exportTaskFindingsXLSX 任务漏洞清单(Excel)：甲方台账导入常用格式（M-10）。
+// 与 Word 报告同一数据源（ListFindingsForExport），只是形态不同。
+func (s *Server) exportTaskFindingsXLSX(w http.ResponseWriter, r *http.Request) {
+	t := s.m.ResolveTask(r.URL.Query().Get("task"))
+	if t == nil {
+		writeErr(w, 404, "no active task")
+		return
+	}
+	in, err := s.assembleTaskReport(r.Context(), t)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	data, err := report.FindingsXLSX(in.Findings, in.AssetNames)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	name := fmt.Sprintf("pangu-findings-task%s-%s.xlsx", t.ID, time.Now().Format("20060102"))
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", attachmentDisposition(name))
+	w.WriteHeader(200)
+	_, _ = w.Write(data)
+}
+
+// exportTaskPDF 任务总报告的 PDF 版（M-10）：先渲染 Word，再用宿主环境的
+// LibreOffice 转 PDF——与文档预览同一链路，不引第三方文档库。
+// soffice 未安装时明确返回 503 并提示改用 Word 导出，而不是抛一个看不懂的错误。
+func (s *Server) exportTaskPDF(w http.ResponseWriter, r *http.Request) {
+	t := s.m.ResolveTask(r.URL.Query().Get("task"))
+	if t == nil {
+		writeErr(w, 404, "no active task")
+		return
+	}
+	in, err := s.assembleTaskReport(r.Context(), t)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	tmp, err := os.MkdirTemp("", "pangu-pdf-*")
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	defer os.RemoveAll(tmp)
+	docxPath := filepath.Join(tmp, "report.docx")
+	f, err := os.Create(docxPath)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := report.BuildTaskDocx(in).Encode(f); err != nil {
+		f.Close()
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := f.Close(); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	pdfPath, err := docpreview.ConvertToPDF(r.Context(), docxPath, tmp)
+	if err != nil {
+		if errors.Is(err, docpreview.ErrSofficeMissing) {
+			writeErr(w, 503, "未安装 LibreOffice（soffice），无法导出 PDF。可在「宿主环境」安装后重试，或改用 Word 导出。")
+			return
+		}
+		writeErr(w, 500, err.Error())
+		return
+	}
+	data, err := os.ReadFile(pdfPath)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	name := fmt.Sprintf("pangu-report-task%s-%s.pdf", t.ID, time.Now().Format("20060102"))
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", attachmentDisposition(name))
+	w.WriteHeader(200)
+	_, _ = w.Write(data)
 }
 
 // artifactImageResolver 构造证据附件图片解析器（v0.5.0）：只解析本任务内的

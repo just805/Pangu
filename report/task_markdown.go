@@ -120,6 +120,29 @@ func TaskMarkdown(in TaskDocxInput) string {
 		fmt.Fprintf(&b, "本次测试覆盖：%s（明细见附录 A）。\n\n", strings.Join(parts, "；"))
 	}
 	b.WriteString("### 方法论\n\n本次评估由 AI 多 Agent 自主渗透平台 PANGU 执行：规划 Agent 依据目标与资产态势派发探测意图，执行 Agent 以真实工具（nmap/httpx/nuclei/ffuf/sqlmap 等）完成侦察、漏洞验证与利用，全程流量经记录代理留痕；漏洞结论均要求可复现证据（PoC 命令/请求响应）支撑，critical/high 级发现建议按复测记录进行独立复验。严重度评定参照 CVSS v3.1 结合业务影响人工校准。\n\n")
+	// ── 覆盖与排除（与 Word 同源；M-04 起消费三态结论）──
+	if cov := in.Coverage; cov != nil && ((cov.ScopeRows > 0 && cov.Denominator > 0) || len(cov.Excluded) > 0 || cov.OpenProofGaps > 0) {
+		b.WriteString("### 覆盖与排除\n\n")
+		if cov.ScopeRows > 0 && cov.Denominator > 0 {
+			pct := "—"
+			if cov.Pct != nil {
+				pct = fmt.Sprintf("%.0f%%", *cov.Pct*100)
+			}
+			fmt.Fprintf(&b, "任务范围共 %d 条资产，已触达约 %d 条（覆盖率 %s）。未触达不代表没有漏洞，只表示本次未在该资产上形成结论。\n\n",
+				cov.Denominator, cov.Tested, pct)
+		}
+		if len(cov.Excluded) > 0 {
+			fmt.Fprintf(&b, "明确排除了 %d 个方向，均附拦截控制点与证据：\n\n", len(cov.Excluded))
+			b.WriteString("| 已排除方向 | 拦截控制点 |\n|---|---|\n")
+			for _, e := range cov.Excluded {
+				fmt.Fprintf(&b, "| %s | %s |\n", mdCell(clipRunes(e.Summary, 80)), mdCell(nz(e.ControlPoint, "—")))
+			}
+			b.WriteString("\n")
+		}
+		if cov.OpenProofGaps > 0 {
+			fmt.Fprintf(&b, "另有 %d 个方向做了探测但证据不足以定论，记为「未验证」——未验证不等于无风险。\n\n", cov.OpenProofGaps)
+		}
+	}
 
 	// ── 三、漏洞明细 ──
 	b.WriteString("## 三、漏洞明细\n\n")
@@ -129,6 +152,10 @@ func TaskMarkdown(in TaskDocxInput) string {
 		for fi, f := range g.items {
 			fmt.Fprintf(&b, "#### 3.%d.%d [%s] %s\n\n", gi+1, fi+1, SeverityCN(f.Severity), findingTitle(f))
 			fmt.Fprintf(&b, "- **漏洞类别**：%s\n", nz(f.VulnClass, "未分类"))
+			// CVSS（M-11）：与 Word 同源，向量由 Agent 提供、分数由平台计算。
+			if f.CVSSScore != nil {
+				fmt.Fprintf(&b, "- **CVSS**：%.1f  %s\n", *f.CVSSScore, nz(f.CVSSVector, ""))
+			}
 			if len(f.AssetIDs) > 0 {
 				fmt.Fprintf(&b, "- **影响资产**：%s\n", assetNames(f.AssetIDs, in.AssetNames))
 			}
