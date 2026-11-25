@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### 修复（CI flaky 治理，测试基建）
+
+- **notify 系列负载型假失败的根因修复**：Manager 后台 Notifier 每 3s 全局领
+  `NOT fanned_out` 事件，与 `notify_api_test` 用例自驱的 FanOut/stepDigest
+  竞争同一批事件——本地快跑在 3s tick 前完成所以绿，CI 高负载下 dispatcher
+  插队领走事件导致 hook.count/sent/pending 断言错位。`newNotifyFixture` 改为
+  `notify_enabled=false` 关掉后台循环（用例全部显式自驱，cleanup 恢复默认）。
+- **chat mention 测试窗口放宽**：`TestChatMentionWorkerReceivesServerDetails`
+  的模型请求等待与 quiescent 等待 5s→15s（CI 负载下 goroutine 排队更慢）。
+- **CI flaky guard 兜底**：ci.yml Test 步整轮失败时自动提取 `--- FAIL` 名单
+  只重跑失败测试——重跑过 = flaky（job 绿，首轮日志仍进 summary 可查）；
+  重跑仍挂 = 真回归。消除「同代码三轮两绿一红」的信号噪音。
+- AGENTS.md 测试基线段同步更新（根因与修复记载）。
+
+## [0.1.22] - 2026-11-25
+
 ## [0.1.22] - 2026-11-25
 
 ### 修复（Tor/I2P 需求收口，「新能能力.md」隐藏服务条目正式关闭）

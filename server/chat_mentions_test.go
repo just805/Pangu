@@ -180,10 +180,12 @@ func TestChatMentionWorkerReceivesServerDetails(t *testing.T) {
 		if !strings.Contains(string(blob), "worker-hidden-proof") || !strings.Contains(string(blob), "用户引用的记录快照") {
 			t.Fatalf("worker missing reference details: %s", blob)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
+		// 15s 而非 5s：CI 高负载下 goroutine 启动+首轮模型调用排队更慢
+		// （负载型 flaky：本地秒过、CI 偶发超时）。
 		t.Fatal("worker did not receive a model request")
 	}
-	drain, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	drain, stop := context.WithTimeout(context.Background(), 15*time.Second)
 	defer stop()
 	if err := s.waitTaskQuiescent(drain, task.ID); err != nil {
 		t.Fatal(err)

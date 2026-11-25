@@ -86,9 +86,18 @@ func newNotifyFixture(t *testing.T) *notifyFixture {
 		}
 	})
 	// 总开关必须是开的（其它用例可能关过它）。
-	if err := pg.SetBool(settingNotifyEnabled, true); err != nil {
+	// 关掉后台投递引擎（notify_enabled=false）：Notifier.Run 每 3s 全局领
+	// NOT fanned_out 事件——本文件所有用例都是显式调用 FanOutPendingEvents/
+	// stepDigest 自驱的，后台循环只会与测试竞争同一批事件（CI 高负载下测试
+	// 步骤间隙超过 3s，dispatcher 插队领走事件 → hook.count/sent/pending
+	// 断言错位 → 假失败，即 AGENTS.md 记载的本文件负载型 flaky 的根因）。
+	// 结束时清掉设置行，恢复「默认开」。
+	if err := pg.SetBool(settingNotifyEnabled, false); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		pg.Exec(`DELETE FROM settings WHERE key=$1`, settingNotifyEnabled)
+	})
 	return f
 }
 

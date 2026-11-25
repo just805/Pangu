@@ -58,6 +58,20 @@ jobs:
           fi
           exit "$status"
 
+      # flaky 兜底：负载型测试（共享 PG 库 + 后台协程竞争）在 CI 高负载下偶发
+      # 假失败。整轮失败时提取 --- FAIL 名单**只重跑失败的测试**——重跑通过 =
+      # flaky（job 绿，首轮日志仍在 summary 与日志里可查）；重跑仍挂 = 真回归。
+      - name: Retry failed tests (flaky guard)
+        if: failure()
+        run: |
+          FAILED=$(grep -oE '^--- FAIL: [^ ]+' /tmp/go-test.log | sed 's/^--- FAIL: //' | sort -u | paste -sd'|' -)
+          if [ -z "$FAILED" ]; then
+            echo "无 --- FAIL 行（构建/panic 类失败），不重试"
+            exit 1
+          fi
+          echo "flaky guard retry: $FAILED"
+          go test -p 1 -run "($FAILED)" ./... -count=1
+
   frontend:
     runs-on: ubuntu-latest
     steps:

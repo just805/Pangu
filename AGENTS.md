@@ -35,9 +35,15 @@ PANGU_SKIP_FRONTEND=1 PANGU_SKIP_NPM_CI=1 PANGU_COMPRESS=0 PANGU_PACKAGE=0 \
 
 ## 2. 测试基线（判定 FAIL 是否与你有关）
 
-- **已知负载性 flaky**（单跑必过，全量偶发，勿当回归）：
+- **已知负载性 flaky（2026-11-25 已治理，见下）**：
   `TestChatMentionWorkerReceivesServerDetails`、`TestNotifyDigestSegmentsAndDefersRemainder`（共享库脏数据）、
   `TestChatUnavailableReasonDistinguishesStates`（Windows TempDir 清理竞态）。
+  - **根因与修复**：notify 系列的真凶是 Manager 后台 Notifier 每 3s 全局领
+    `NOT fanned_out` 事件，与测试自驱的 FanOut/stepDigest 竞争同一批事件——
+    `newNotifyFixture` 现已把 `notify_enabled` 关为 false（用例全部显式自驱，
+    cleanup 恢复默认）；chat mention 的 5s 窗口放宽到 15s（CI 负载下排队慢）。
+  - **CI 兜底**：ci.yml Test 步失败后自动提取 `--- FAIL` 名单只重跑失败测试
+    （重跑过 = flaky 绿灯但日志可见；重跑挂 = 真回归）。
 - **判定法**：`go test ./server/ -run <name> -count=1` 单跑，过 = 环境问题。
 - **Windows 特有**：`evidence` 目录 fsync 已做 GOOS 分支；不要引入依赖目录 fsync 的新代码。
 
