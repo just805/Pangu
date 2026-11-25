@@ -289,6 +289,17 @@ type Coverage struct {
 	Tested      int              `json:"tested"`      // 已测(约)
 	Pct         *float64         `json:"pct"`         // 覆盖度；分母 0 时 null
 	ByType      []CoverageByType `json:"by_type"`     // 按资产类型的 总数/已测
+	// Excluded 是 verdict=ruled_out 的已排除结论（含控制点）。报告「覆盖与排除」
+	// 章节据此列出「排掉了哪些方向、依据是什么」，而不是一句笼统的排除说明（M-04）。
+	Excluded []CoverageExclusion `json:"excluded,omitempty"`
+	// OpenProofGaps 是 verdict=open_proof_gap 的未验证结论数（做过探测但证据不足）。
+	OpenProofGaps int `json:"open_proof_gaps,omitempty"`
+}
+
+// CoverageExclusion 是一条已排除的探索结论：方向 + 把它挡住的控制点。
+type CoverageExclusion struct {
+	Summary      string `json:"summary"`
+	ControlPoint string `json:"control_point,omitempty"`
 }
 
 // CoverageEnabled reports whether a task has the asset-coverage feature turned on
@@ -358,7 +369,58 @@ FROM target t GROUP BY t.type ORDER BY t.type`, taskID, expID)
 		p := float64(cov.Tested) / float64(cov.Denominator)
 		cov.Pct = &p
 	}
+	// 三态收口（M-04）：把「已排除 / 未验证」的结论并入覆盖数据。之前报告的
+	// 排除说明是一句笼统的「范围外资产不在本次测试范围内」——真正该回答的是
+	// 「哪些方向试过了、被什么挡住、有没有结论」。查询失败不影响覆盖率主体。
+	s.loadCoverageVerdicts(cov, expID)
 	return cov, nil
+}
+
+// loadCoverageVerdicts 填充 Coverage.Excluded / OpenProofGaps。
+// 只读 payload，不解析详情里的其它字段；失败静默（覆盖率本身仍然有效）。
+func (s *AssetStore) loadCoverageVerdicts(cov *Coverage, expID int64) {
+	if cov == nil || expID <= 0 {
+		return
+	}
+	rows, err := s.db.Query(`SELECT payload->>'summary', payload->>'control_point'
+FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='fact'
+  AND payload->>'verdict' IN ('ruled_out','open_proof_gap')
+ORDER BY id`, expID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var summary, controlPoint *string
+		if err := rows.Scan(&summary, &controlPoint); err != nil {
+			continue
+		}
+		if summary == nil || *summary == "" {
+			continue
+		}
+		cov.OpenProofGaps++ // 先按总数计，排除项再转入明细
+		cov.Excluded = append(cov.Excluded, CoverageExclusion{Summary: *summary, ControlPoint: derefStr(controlPoint)})
+	}
+	// Excluded 只留 ruled_out（有 control_point 的才算真正排除），其余算未验证。
+	kept := cov.Excluded[:0]
+	for _, e := range cov.Excluded {
+		if strings.TrimSpace(e.ControlPoint) != "" {
+			kept = append(kept, e)
+		}
+	}
+	cov.Excluded = kept
+	cov.OpenProofGaps -= len(kept)
+	if cov.OpenProofGaps < 0 {
+		cov.OpenProofGaps = 0
+	}
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return strings.TrimSpace(*s)
 }
 
 // ---------------------------------------------------------------------------

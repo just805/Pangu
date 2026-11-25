@@ -1680,3 +1680,162 @@ CREATE TABLE IF NOT EXISTS finding_updates (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_finding_updates_finding ON finding_updates(finding_id, id DESC);
+
+-- ── 角色权限矩阵（M-03，2026-11-26）────────────────────────────────────
+-- 越权测试的结构化前提：此前「哪个角色能访问哪个接口」只能靠模型从流量里现推，
+-- 结论不可复用、缺口不可见。矩阵按任务沉淀（随任务删除级联），
+-- role × host × method × path 唯一，重复上报覆盖更新而不是堆行。
+-- expected/observed 三态：allow | deny | unknown；两者不一致即「疑似越权」，
+-- 但只作线索——确认仍需证据（traffic_id 指向的请求响应）。
+CREATE TABLE IF NOT EXISTS authz_matrix (
+    id             BIGSERIAL PRIMARY KEY,
+    task_id        BIGINT NOT NULL,
+    exploration_id BIGINT NOT NULL,
+    role           TEXT NOT NULL,
+    host           TEXT NOT NULL DEFAULT '',
+    method         TEXT NOT NULL DEFAULT 'GET',
+    path           TEXT NOT NULL,
+    expected       TEXT NOT NULL DEFAULT 'unknown',
+    observed       TEXT NOT NULL DEFAULT 'unknown',
+    status_code    INT,
+    traffic_id     TEXT NOT NULL DEFAULT '',
+    note           TEXT NOT NULL DEFAULT '',
+    intent_id      BIGINT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (task_id, role, host, method, path)
+);
+CREATE INDEX IF NOT EXISTS idx_authz_matrix_task ON authz_matrix(task_id);
+CREATE INDEX IF NOT EXISTS idx_authz_matrix_gap ON authz_matrix(task_id, expected, observed)
+    WHERE expected = 'unknown' OR observed = 'unknown';
+
+-- ── 通道自定义价格（M-15，2026-11-26）──────────────────────────────────
+-- server/cost.go 的内置参考价是公开标价的近似值，覆盖不到自有网关/中转站的
+-- 实际折扣价——按内置表算"这个任务花了多少"会失真。允许每个通道声明自己的
+-- 输入/输出单价（USD / 1M tokens）；0 = 未声明，回退内置参考价。
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS input_price_per_mtok DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS output_price_per_mtok DOUBLE PRECISION NOT NULL DEFAULT 0;
+
+-- ── 周期任务调度（M-06，2026-11-26）────────────────────────────────────
+-- 只在「新建任务」层面调度侦察/攻击面类任务，**不调度复测**（平台已决策复测纯手动）。
+-- 触发时走 launchTask → admitTask，天然继承并发上限与排队，不绕过准入。
+-- 上一轮任务未到终态时不叠加执行（顺延到下一周期）。
+CREATE TABLE IF NOT EXISTS task_schedules (
+    id                     BIGSERIAL PRIMARY KEY,
+    name                   TEXT NOT NULL,
+    description            TEXT NOT NULL DEFAULT '',
+    goal                   TEXT NOT NULL DEFAULT '',
+    interval_minutes       INT NOT NULL DEFAULT 1440,
+    enabled                BOOLEAN NOT NULL DEFAULT true,
+    company_ids            JSONB NOT NULL DEFAULT '[]',
+    timeout_seconds        INT NOT NULL DEFAULT 0,
+    plan_heartbeat_seconds INT NOT NULL DEFAULT 0,
+    coverage_enabled       BOOLEAN NOT NULL DEFAULT true,
+    next_run_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_run_at            TIMESTAMPTZ,
+    last_task_id           BIGINT,
+    last_error             TEXT NOT NULL DEFAULT '',
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_task_schedules_due ON task_schedules(next_run_at) WHERE enabled;
+
+-- ── 资产快照与变更检测（M-07，2026-11-26）──────────────────────────────
+-- 资产图只有「当前状态」，回答不了「这次比上次多了什么」。快照把状态按时间点
+-- 固化，diff 出新增/消失/指纹变化——新资产可直接挂进未测清单，也可只对新增资产
+-- 派任务，避免每次全量重扫。
+CREATE TABLE IF NOT EXISTS asset_snapshots (
+    id          BIGSERIAL PRIMARY KEY,
+    scope_key   TEXT NOT NULL DEFAULT '', -- ''=全站；'company:<id>'=某企业
+    asset_count INT NOT NULL DEFAULT 0,
+    digest      TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_asset_snapshots_scope ON asset_snapshots(scope_key, id DESC);
+CREATE TABLE IF NOT EXISTS asset_snapshot_items (
+    snapshot_id BIGINT NOT NULL REFERENCES asset_snapshots(id) ON DELETE CASCADE,
+    asset_id    BIGINT NOT NULL,
+    type        TEXT NOT NULL DEFAULT '',
+    label       TEXT NOT NULL DEFAULT '',
+    fingerprint TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (snapshot_id, asset_id)
+);
+
+-- ── 开放 API 凭证（M-12，2026-11-26）──────────────────────────────────
+-- 让 CI / 工单 / SOAR 能程序化调用平台。这是**同一管理员账号下的程序化凭证**，
+-- 不是多用户：平台保持单管理员形态（已决策）。只存 sha256 哈希，明文只在创建时
+-- 返回一次；key_hint 保留尾号便于辨认。
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           BIGSERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    key_hash     TEXT NOT NULL UNIQUE,
+    key_hint     TEXT NOT NULL DEFAULT '',
+    enabled      BOOLEAN NOT NULL DEFAULT true,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at TIMESTAMPTZ,
+    expires_at   TIMESTAMPTZ
+);
+
+-- ── 漏洞字段 schema 化（M-11，2026-11-26）──────────────────────────────
+-- 报告模板要按字段 id 绑定渲染、模型要按 schema 填报，前提是字段本身可定义。
+-- 内置字段由代码种子写入（ON CONFLICT DO NOTHING，不覆盖用户改过的行）；
+-- builtin=true 的字段名/类型不可改，只允许改 label/hint。
+-- CVSS 两列是「自动算分」的落点：模型给 vector，平台算 score——数字不由模型自评。
+CREATE TABLE IF NOT EXISTS finding_field_defs (
+    key         TEXT PRIMARY KEY,
+    label       TEXT NOT NULL DEFAULT '',
+    type        TEXT NOT NULL DEFAULT 'text',   -- text|enum|number|date|multiline
+    enum_values JSONB NOT NULL DEFAULT '[]',
+    required    BOOLEAN NOT NULL DEFAULT false,
+    builtin     BOOLEAN NOT NULL DEFAULT true,
+    hint        TEXT NOT NULL DEFAULT '',
+    sort_order  INT NOT NULL DEFAULT 100
+);
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS cvss_vector TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS cvss_score  DOUBLE PRECISION;
+
+-- ── 报告模板（M-10，2026-11-26）────────────────────────────────────────
+-- 交付件此前只有一套内置封面/页眉/章节结构。甲方要求各不相同（有的不要攻击路径、
+-- 有的页眉要委托方全称），这里把可配置项抽成模板：页眉、密级、委托方覆盖，
+-- 以及章节开关（sections JSONB：缺省键=显示，false=跳过）。
+CREATE TABLE IF NOT EXISTS report_templates (
+    id                BIGSERIAL PRIMARY KEY,
+    name              TEXT NOT NULL,
+    is_default        BOOLEAN NOT NULL DEFAULT false,
+    page_header       TEXT NOT NULL DEFAULT '',
+    classification    TEXT NOT NULL DEFAULT '',
+    customer_override TEXT NOT NULL DEFAULT '',
+    sections          JSONB NOT NULL DEFAULT '{}',
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ── 合规基线核查（M-09，2026-11-26）────────────────────────────────────
+-- 在「找漏洞」之外补「合不合规」：等保 / CIS 类基线项逐条核查，结果按任务沉淀。
+-- 基线项定义在代码里（db/compliance.go），本表只存核查结果——基线升级不需要迁移。
+-- 不符合项可由 Agent 转成 finding（报告里与漏洞同一套证据链）。
+CREATE TABLE IF NOT EXISTS compliance_results (
+    id         BIGSERIAL PRIMARY KEY,
+    task_id    BIGINT NOT NULL,
+    baseline   TEXT NOT NULL,
+    item_key   TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'unknown', -- pass|fail|na|unknown
+    evidence   TEXT NOT NULL DEFAULT '',
+    note       TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (task_id, baseline, item_key)
+);
+CREATE INDEX IF NOT EXISTS idx_compliance_results_task ON compliance_results(task_id, baseline);
+
+-- ── 回归评测靶场（M-14，2026-11-26)────────────────────────────────────
+-- 评测基线（db/eval.go）只能聚合真实任务；没有标准答案，改了提示词/换了模型
+-- 不知道是变好还是变坏。本表登记「靶场任务的标准答案」，跑完后机器判卷。
+-- expected 形如 [{"vulnclass":"sql_injection","asset_keyword":"/api/login","note":"布尔盲注"}]
+CREATE TABLE IF NOT EXISTS eval_benchmarks (
+    id          BIGSERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    expected    JSONB NOT NULL DEFAULT '[]',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

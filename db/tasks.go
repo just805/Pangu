@@ -675,6 +675,15 @@ DELETE FROM assets a USING deletable d WHERE a.id=d.id`, id, expID)
 	if _, err := tx.Exec(`DELETE FROM autopilot_events WHERE task_id=$1`, strconv.FormatInt(id, 10)); err != nil {
 		return result, err
 	}
+	// 角色权限矩阵（M-03）按任务归属，无外键，随任务删除显式清理——避免遗留
+	// 指向已删任务的矩阵行被后续任务按 id 误读。
+	if _, err := tx.Exec(`DELETE FROM authz_matrix WHERE task_id=$1`, id); err != nil {
+		return result, err
+	}
+	// 合规核查结果（M-09）同样按任务归属、无外键，随任务删除显式清理。
+	if _, err := tx.Exec(`DELETE FROM compliance_results WHERE task_id=$1`, id); err != nil {
+		return result, err
+	}
 	if _, err := tx.Exec(`DELETE FROM tasks WHERE id=$1`, id); err != nil {
 		return result, err
 	}

@@ -164,6 +164,10 @@ func Open(dsn string) (*DB, error) {
 		if err := d.seedBuiltins(); err != nil {
 			return fmt.Errorf("seed builtins: %w", err)
 		}
+		// 漏洞字段定义（M-11）：ON CONFLICT DO NOTHING，不覆盖用户改过的 label/hint。
+		if err := d.SeedFindingFieldDefs(context.Background()); err != nil {
+			return fmt.Errorf("seed finding field defs: %w", err)
+		}
 		return nil
 	})
 	if err != nil {

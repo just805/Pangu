@@ -349,6 +349,10 @@ type RecordFindingInput struct {
 	// 的这条重复记录插入推送事件（客户反馈：跨任务重复漏洞「一直播报」）。漏洞本身
 	// 照常入库——各任务的发现记录相互独立，只是不重复打扰。
 	CrossTaskNotifyDedup bool
+	// CVSSVector / CVSSScore（M-11）：模型给向量、平台算分。Score 为 nil 表示未提供
+	// 或无法解析——此时按既有 severity 走证据闸门，不凭空补分。
+	CVSSVector string
+	CVSSScore  *float64
 }
 
 type RecordedFinding struct {
@@ -525,8 +529,8 @@ VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string
 	}
 	raw, _ := json.Marshal(assets)
 	rootKey := normalizeRootCauseKey(in.RootCauseKey)
-	if err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids,fingerprint,root_cause_key)
-VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(raw), fp, rootKey).Scan(&out.FindingID); err != nil {
+	if err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids,fingerprint,root_cause_key,cvss_vector,cvss_score)
+VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(raw), fp, rootKey, in.CVSSVector, in.CVSSScore).Scan(&out.FindingID); err != nil {
 		return nil, err
 	}
 	if err := insertFindingKeysTx(tx, out.FindingID, keys); err != nil {

@@ -71,6 +71,11 @@ type LLMProfile struct {
 	// inherit the global policy (LLMRetryPolicy), so an untouched profile behaves
 	// exactly as before. See RetryOverride.
 	Retry RetryOverride `json:"retry"`
+	// InputPricePerMTok / OutputPricePerMTok 是该通道的自定义单价（USD / 1M tokens）。
+	// 0 = 未声明，成本核算回退 server/cost.go 的内置参考价——自有网关/中转站的
+	// 实际折扣价与公开标价差异很大，只有用户自己填的才准。
+	InputPricePerMTok  float64 `json:"input_price_per_mtok"`
+	OutputPricePerMTok float64 `json:"output_price_per_mtok"`
 }
 
 // RetryOverride is one profile's optional override of the three retry layers
@@ -86,8 +91,11 @@ type RetryOverride struct {
 // profileCols is the read column list (hint variant, no api key) shared by the
 // list query; profileColsKey is the same with api_key for the single-row loads.
 const profileRetryCols = `COALESCE(retry_connect_attempts,0),COALESCE(retry_connect_interval_ms,0),COALESCE(retry_empty_attempts,0),COALESCE(retry_empty_interval_ms,0),COALESCE(retry_stream_attempts,0),COALESCE(retry_stream_interval_ms,0)`
-const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),COALESCE(user_agent,''),` + profileRetryCols
-const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),COALESCE(user_agent,''),` + profileRetryCols
+const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),COALESCE(user_agent,''),` + profileRetryCols + profilePriceCols
+const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),COALESCE(user_agent,''),` + profileRetryCols + profilePriceCols
+
+// profilePriceCols 是 M-15 的通道自定义价格列（追加在读列末尾）。
+const profilePriceCols = `,COALESCE(input_price_per_mtok,0),COALESCE(output_price_per_mtok,0)`
 
 // scanProfile reads one row in the profileCols / profileColsKey column order. The
 // 7th column lands in APIKeyHint or APIKey depending on which list the caller used.
@@ -97,7 +105,8 @@ func scanProfile(sc interface{ Scan(...any) error }, into *string, p *LLMProfile
 		&p.MaxTokens, &p.MaxTokensField, &p.SessionHeaderKey, &p.UserAgent,
 		&p.Retry.Connect.Attempts, &p.Retry.Connect.IntervalMS,
 		&p.Retry.Empty.Attempts, &p.Retry.Empty.IntervalMS,
-		&p.Retry.Stream.Attempts, &p.Retry.Stream.IntervalMS)
+		&p.Retry.Stream.Attempts, &p.Retry.Stream.IntervalMS,
+		&p.InputPricePerMTok, &p.OutputPricePerMTok)
 }
 
 func (d *DB) ListProfiles() ([]*LLMProfile, error) {
@@ -175,18 +184,44 @@ func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
 VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25) RETURNING id`,
 			p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, p.UserAgent,
 			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS).Scan(&id)
-		return id, err
+		if err != nil {
+			return 0, err
+		}
+		return id, d.saveProfilePrices(id, p.InputPricePerMTok, p.OutputPricePerMTok)
 	}
 	if p.APIKey == "" {
 		_, err := d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,rate_per_second=$6,rate_per_minute=$7,context_window_k=$8,reasoning_effort=$9,priority=$10,pool_exclude=$11,thinking_type=$12,streaming=$13,max_tokens=$14,max_tokens_field=$15,session_header_key=$16,user_agent=$17,retry_connect_attempts=$18,retry_connect_interval_ms=$19,retry_empty_attempts=$20,retry_empty_interval_ms=$21,retry_stream_attempts=$22,retry_stream_interval_ms=$23 WHERE id=$24`,
 			p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, p.UserAgent,
 			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.ID)
-		return p.ID, err
+		if err != nil {
+			return p.ID, err
+		}
+		return p.ID, d.saveProfilePrices(p.ID, p.InputPricePerMTok, p.OutputPricePerMTok)
 	}
 	_, err := d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,api_key=$6,api_key_hint=$7,rate_per_second=$8,rate_per_minute=$9,context_window_k=$10,reasoning_effort=$11,priority=$12,pool_exclude=$13,thinking_type=$14,streaming=$15,max_tokens=$16,max_tokens_field=$17,session_header_key=$18,user_agent=$19,retry_connect_attempts=$20,retry_connect_interval_ms=$21,retry_empty_attempts=$22,retry_empty_interval_ms=$23,retry_stream_attempts=$24,retry_stream_interval_ms=$25 WHERE id=$26`,
 		p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey, p.UserAgent,
 		r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.ID)
-	return p.ID, err
+	if err != nil {
+		return p.ID, err
+	}
+	return p.ID, d.saveProfilePrices(p.ID, p.InputPricePerMTok, p.OutputPricePerMTok)
+}
+
+// saveProfilePrices 单独更新价格列：Insert/Update 的大 SQL 参数编号极易错位，
+// 价格是与请求参数无关的新列，单条 UPDATE 更安全。
+func (d *DB) saveProfilePrices(id int64, inPrice, outPrice float64) error {
+	if id <= 0 {
+		return nil
+	}
+	if inPrice < 0 {
+		inPrice = 0
+	}
+	if outPrice < 0 {
+		outPrice = 0
+	}
+	_, err := d.Exec(`UPDATE llm_profiles SET input_price_per_mtok=$1, output_price_per_mtok=$2 WHERE id=$3`,
+		inPrice, outPrice, id)
+	return err
 }
 
 var (

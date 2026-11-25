@@ -69,6 +69,21 @@ const (
 	ScopeClassForeign AssetScopeClass = "foreign"
 )
 
+// TaskScopeDeclared 报告任务是否显式声明过测试范围（task_scope 是否有行）。
+//
+// 派单侧范围校验必须先看这个：任务从没配过范围时，资产归属无法判成 own，
+// 会把正常派单全judge成越界。与 N2 scope 守卫的「未配范围保守放行」同一取向。
+func (s *AssetStore) TaskScopeDeclared(taskID int64) bool {
+	if s == nil || taskID <= 0 {
+		return false
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM task_scope WHERE task_id=$1`, taskID).Scan(&n); err != nil {
+		return false // 查询失败按「未声明」处理：宁可放行也不误拦
+	}
+	return n > 0
+}
+
 // ClassifyAssetsForTask 把 ids 按 own/source/foreign 分类。查询失败时返回错误，
 // 调用方决定失败策略（闸门建议 fail-open 但打日志，避免把正常任务全部卡死）。
 func (s *AssetStore) ClassifyAssetsForTask(taskID int64, ids []int64) (own, source, foreign []int64, err error) {
