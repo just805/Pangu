@@ -458,20 +458,31 @@ export function SessionsTab({ taskId, onJumpCoverage }: { taskId: string; onJump
   // 方式1 文件上传:选好的附件(已落到任务工作目录 uploads/),随下条消息一起发。
   const [attachments, setAttachments] = React.useState<ChatAttachment[]>([]);
   const [uploading, setUploading] = React.useState(false);
+  // 上传失败的文件保留在内存里供一键重试——此前失败即清空文件输入，用户得
+  // 重新找文件（大包上传失败一次代价很高）。
+  const [failedUploads, setFailedUploads] = React.useState<File[]>([]);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  async function pickFiles(files: FileList | null) {
-    if (!files || files.length === 0) return;
+  async function pickFiles(files: File[] | FileList | null) {
+    const list = files ? Array.from(files) : [];
+    if (list.length === 0) return;
     setUploading(true);
     try {
-      const r = await api.chatUpload("task", taskId, Array.from(files));
+      const r = await api.chatUpload("task", taskId, list);
       setAttachments((prev) => [...prev, ...r.attachments]);
     } catch (e) {
-      toast.error(`上传失败：${(e as Error).message}`);
+      setFailedUploads((prev) => [...prev, ...list]);
+      toast.error(`上传失败：${(e as Error).message}（文件已保留，可点重试）`);
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  }
+
+  async function retryFailedUploads() {
+    const files = failedUploads;
+    setFailedUploads([]);
+    await pickFiles(files);
   }
 
   // Start a fresh main-agent session: only the segment counter advances — the task's
@@ -2019,6 +2030,29 @@ export function SessionsTab({ taskId, onJumpCoverage }: { taskId: string; onJump
                         </button>
                       </div>
                     ))}
+                  </div>
+                )}
+                {failedUploads.length > 0 && (
+                  <div className="mb-1 flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive">
+                    <span className="min-w-0 flex-1 truncate">
+                      {failedUploads.length} 个文件上传失败（{failedUploads.map((f) => f.name).join("、")}）
+                    </span>
+                    <button
+                      type="button"
+                      disabled={uploading}
+                      onClick={() => void retryFailedUploads()}
+                      className="shrink-0 rounded border px-1.5 py-0.5 hover:bg-destructive/10 disabled:opacity-50"
+                    >
+                      重试
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFailedUploads([])}
+                      className="shrink-0 rounded px-1 py-0.5 hover:bg-destructive/10"
+                      aria-label="丢弃失败文件"
+                    >
+                      <XIcon className="size-3" />
+                    </button>
                   </div>
                 )}
                 <input

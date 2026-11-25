@@ -6,6 +6,7 @@ import { PlayIcon, PlusIcon, RotateCcwIcon, SaveIcon, SearchIcon, Trash2Icon } f
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -445,9 +446,14 @@ export default function ToolsPage() {
             </CardHeader>
             <CardContent>
               {systemTools.length === 0 ? (
-                <p className="py-6 text-center text-muted-foreground text-sm">
-                  {query.trim() ? "没有匹配的系统工具" : "（暂无系统工具，等待后端 seed）"}
-                </p>
+                <Empty className="py-6">
+                  <EmptyHeader>
+                    <EmptyTitle>{query.trim() ? "没有匹配的系统工具" : "暂无系统工具"}</EmptyTitle>
+                    <EmptyDescription>
+                      {query.trim() ? "试试换个关键字。" : "等待后端 seed 工具目录。"}
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {systemTools.map((t) => (

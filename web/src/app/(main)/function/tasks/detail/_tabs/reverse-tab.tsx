@@ -232,15 +232,14 @@ export function ReverseTab({ taskId }: { taskId: string }) {
     };
   }, [decompiled, selectedId, taskId, openFile]);
 
-  const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const input = e.currentTarget;
-    const file = input.files?.[0];
-    if (!file) return;
+  // 上传失败时保留 File 对象供一键重试——大样本重新找文件代价高。
+  const [failedFile, setFailedFile] = React.useState<File | null>(null);
+
+  const uploadFile = async (file: File) => {
     if (file.size > MAX_SAMPLE_BYTES) {
       const msg = `样本超过 ${MAX_SAMPLE_BYTES >> 20}MB 上限，无法上传`;
       setError(msg);
       toast.error(msg);
-      input.value = "";
       return;
     }
     setUploading(true);
@@ -286,13 +285,30 @@ export function ReverseTab({ taskId }: { taskId: string }) {
       }
     } catch (err: unknown) {
       const msg = uploadErrorMessage(err);
-      setError(msg);
+      setError(msg + `（文件 ${file.name} 已保留，可点重试）`);
+      setFailedFile(file);
       toast.error(msg);
     } finally {
       setUploading(false);
       setUploadProgress(null);
-      input.value = "";
     }
+  };
+
+  const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    setFailedFile(null);
+    await uploadFile(file);
+  };
+
+  const retryUpload = async () => {
+    if (!failedFile) return;
+    const file = failedFile;
+    setFailedFile(null);
+    setError("");
+    await uploadFile(file);
   };
 
   const select = async (id: number) => {
@@ -399,7 +415,17 @@ export function ReverseTab({ taskId }: { taskId: string }) {
         </div>
       </div>
 
-      {error ? <p className="text-destructive text-sm">{error}</p> : null}
+      {error ? (
+        <div className="flex items-center gap-2">
+          <p className="text-destructive text-sm">{error}</p>
+          {failedFile && (
+            <Button size="sm" variant="outline" disabled={uploading} onClick={() => void retryUpload()}>
+              <RefreshCw className={cn("size-3.5", uploading && "animate-spin")} />
+              重试上传
+            </Button>
+          )}
+        </div>
+      ) : null}
 
       {samples.length === 0 && !loading ? (
         <Card>

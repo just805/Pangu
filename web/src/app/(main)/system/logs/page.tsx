@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { sseUrl } from "@/lib/api";
@@ -205,7 +206,12 @@ export default function LogsPage() {
             </div>
           )}
           {filtered.length === 0 ? (
-            <p className="py-10 text-center text-muted-foreground">暂无日志。</p>
+            <Empty className="py-10">
+              <EmptyHeader>
+                <EmptyTitle>暂无日志</EmptyTitle>
+                <EmptyDescription>当前筛选条件下没有匹配的日志，试试放宽关键字或时间范围。</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           ) : (
             filtered.map((l) => {
               const body =

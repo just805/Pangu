@@ -2,6 +2,8 @@
 
 import * as React from "react";
 import { toast } from "sonner";
+
+import { useUnsavedGuard } from "@/hooks/use-unsaved-guard";
 import {
   ChevronRightIcon,
   FolderIcon,
@@ -304,6 +306,7 @@ export default function SkillsPage() {
   const [fileContent, setFileContent] = React.useState("");
   const [fileLoading, setFileLoading] = React.useState(false);
   const [dirty, setDirty] = React.useState(false);
+  useUnsavedGuard(dirty); // 未保存的技能编辑：刷新/关标签前确认
   const [saving, setSaving] = React.useState(false);
 
   // inline create — using a ref to avoid stale closure in onBlur

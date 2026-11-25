@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { useUnsavedGuard } from "@/hooks/use-unsaved-guard";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -72,6 +74,7 @@ export default function WorkspacePage() {
   const [entries, setEntries] = React.useState<WorkspaceEntry[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [edit, setEdit] = React.useState<EditState | null>(null);
+  useUnsavedGuard(!!edit?.dirty); // 未保存的工作区文件：刷新/关标签前确认
   const [mkdirOpen, setMkdirOpen] = React.useState(false);
   const [mkdirName, setMkdirName] = React.useState("");
   const uploadRef = React.useRef<HTMLInputElement>(null);
