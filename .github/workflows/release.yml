@@ -146,13 +146,37 @@ jobs:
             echo "完整逐版本历史见 [CHANGELOG.md](https://github.com/just805/Pangu/blob/main/CHANGELOG.md)。"
           } > /tmp/release-notes.md
           head -30 /tmp/release-notes.md
-      - uses: softprops/action-gh-release@v2
+      # 发布失败不立即让 job 变红：下面有 gh CLI 兜底重试。softprops action 没有
+      # 内建重试，GitHub API 偶发抖动（v0.1.27：zip/SHA256SUMS/install.sh 都生成
+      # 成功，只差创建 Release 这一步）会让整个 release 变红、Releases 页缺版本。
+      - name: Publish release
+        id: ghrelease
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.zip
             dist/SHA256SUMS
             dist/install.sh
           body_path: /tmp/release-notes.md
+      # 兜底重试：Release 已存在但资产没传完时用 upload --clobber 补齐；不存在
+      # 则整只创建。gh CLI 预装在 runner 上，走同一个 GITHUB_TOKEN。
+      - name: Retry release publish (gh CLI fallback)
+        if: steps.ghrelease.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sleep 15
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release 已存在，补齐资产（--clobber 覆盖半成品）"
+            gh release upload "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS dist/install.sh --clobber
+          else
+            echo "Release 不存在，用 gh CLI 创建"
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file /tmp/release-notes.md \
+              dist/*.zip dist/SHA256SUMS dist/install.sh
+          fi
 
   # ④ 多架构镜像（复用 binaries 编好的 Linux 二进制，镜像里只装工具 + 放二进制；
   #    arm64 仅需模拟 apt 层，构建快很多）。
