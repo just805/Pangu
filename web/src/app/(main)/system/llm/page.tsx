@@ -447,6 +447,10 @@ function ProfileSheet({
   const [streaming, setStreaming] = React.useState(true); // true=流式(默认);false=非流式
   const [maxTokens, setMaxTokens] = React.useState("0"); // 单次回复输出上限;0=不发送
   const [maxTokensField, setMaxTokensField] = React.useState(NONE); // 上限用哪个字段名;NONE=max_tokens
+  // 通道自定义单价（USD / 1M tokens）：0 = 未声明，成本核算回退内置参考价。
+  // 自有网关/中转站的实际折扣价与公开标价差异很大，只有本人填的才准。
+  const [inputPrice, setInputPrice] = React.useState("0");
+  const [outputPrice, setOutputPrice] = React.useState("0");
   const [sessionHeaderKey, setSessionHeaderKey] = React.useState(""); // 自定义会话头名;空=不发送
   const [userAgent, setUserAgent] = React.useState(""); // LLM 请求 UA;空=保持 SDK/Go 默认
   const [retry, setRetry] = React.useState<LLMRetryOverride>(ZERO_OVERRIDE); // 本配置的重试覆盖;全 0=跟随全局
@@ -475,6 +479,8 @@ function ProfileSheet({
     setStreaming(profile?.streaming ?? true);
     setMaxTokens(String(profile?.max_tokens ?? 0));
     setMaxTokensField(fromStore(profile?.max_tokens_field));
+    setInputPrice(String(profile?.input_price_per_mtok ?? 0));
+    setOutputPrice(String(profile?.output_price_per_mtok ?? 0));
     setSessionHeaderKey(profile?.session_header_key ?? "");
     setUserAgent(profile?.user_agent ?? "");
     setRetry(profile?.retry ?? ZERO_OVERRIDE);
@@ -565,6 +571,8 @@ function ProfileSheet({
         pool_exclude: poolExclude,
         streaming,
         max_tokens: Math.max(0, Number(maxTokens) || 0),
+        input_price_per_mtok: Math.max(0, Number(inputPrice) || 0),
+        output_price_per_mtok: Math.max(0, Number(outputPrice) || 0),
         // 字段名开关只对 openai(Chat Completions) 有意义，其它格式一律回落到默认；
         // 后端也会再做一次同样的归一化，这里只是别让 UI 送出自相矛盾的值。
         max_tokens_field: format === "openai" ? toStore(maxTokensField) : "",
@@ -901,6 +909,43 @@ function ProfileSheet({
                 onChange={(e) => setMaxTokens(e.target.value)}
                 placeholder="0"
               />
+            </div>
+            <div className="grid gap-2 border-t pt-3">
+              <div className="grid gap-0.5">
+                <Label className="text-sm">成本单价（USD / 百万 token）</Label>
+                <p className="text-muted-foreground text-xs">
+                  留 0 表示按内置参考价估算。自有网关/中转站的实际折扣价与公开标价差异很大，
+                  填上这两个值后，任务与洞察页的成本按你的真实单价计算。
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="p-input-price" className="text-muted-foreground text-sm">输入</Label>
+                  <Input
+                    id="p-input-price"
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    className="w-28"
+                    value={inputPrice}
+                    onChange={(e) => setInputPrice(e.target.value)}
+                    placeholder="0"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="p-output-price" className="text-muted-foreground text-sm">输出</Label>
+                  <Input
+                    id="p-output-price"
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    className="w-28"
+                    value={outputPrice}
+                    onChange={(e) => setOutputPrice(e.target.value)}
+                    placeholder="0"
+                  />
+                </div>
+              </div>
             </div>
             <div className="flex items-center justify-between gap-4 border-t pt-3">
               <div className="grid gap-0.5">

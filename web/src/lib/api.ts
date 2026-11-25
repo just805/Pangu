@@ -112,6 +112,13 @@ import type {
   TaskNode,
   TaskScopeRow,
   TaskTemplate,
+  TaskSchedule,
+  TaskScheduleInput,
+  AssetSnapshot,
+  AssetDiff,
+  APIKey,
+  ReportTemplate,
+  ReportTemplateInput,
   TokenTotal,
   TokenUsage,
   Tool,
@@ -386,6 +393,30 @@ export const api = {
     input: Partial<Pick<TaskTemplate, "name" | "description" | "goal" | "category_id" | "intercept_rules">>,
   ) => patch<TaskTemplate>(`/task-templates/${id}`, input),
   deleteTaskTemplate: (id: number) => del<{ deleted: number }>(`/task-templates/${id}`),
+  // 周期任务调度（M-06）：只新建侦察类任务，不触发复测。
+  schedules: () => get<TaskSchedule[]>("/schedules"),
+  createSchedule: (input: TaskScheduleInput) => post<{ id: number }>("/schedules", input),
+  updateSchedule: (id: number, input: TaskScheduleInput) => patch<{ ok: boolean }>(`/schedules/${id}`, input),
+  deleteSchedule: (id: number) => del<{ deleted: number }>(`/schedules/${id}`),
+  runScheduleNow: (id: number) => post<{ ok: boolean }>(`/schedules/${id}/run`, {}),
+  // 资产快照与变更检测（M-07）：采快照 / 列快照 / 比较两次快照。
+  assetSnapshots: (scopeKey = "") =>
+    get<AssetSnapshot[]>(`/assets/snapshots?scope_key=${encodeURIComponent(scopeKey)}`),
+  takeAssetSnapshot: (scopeKey = "") => post<AssetSnapshot>("/assets/snapshots", { scope_key: scopeKey }),
+  assetSnapshotDiff: (id: number, base?: number) =>
+    get<AssetDiff>(`/assets/snapshots/${id}/diff${base ? `?base=${base}` : ""}`),
+  // 开放 API 凭证（M-12）：创建时只返回一次明文。
+  apiKeys: () => get<APIKey[]>("/api-keys"),
+  createAPIKey: (name: string, expiresDays: number) =>
+    post<{ key: APIKey; secret: string; note: string }>("/api-keys", { name, expires_days: expiresDays }),
+  deleteAPIKey: (id: number) => del<{ deleted: number }>(`/api-keys/${id}`),
+  // 报告模板（M-10）：页眉/密级/委托方覆盖 + 章节开关。
+  reportTemplates: () => get<ReportTemplate[]>("/report-templates"),
+  createReportTemplate: (input: ReportTemplateInput) => post<{ id: number }>("/report-templates", input),
+  updateReportTemplate: (id: number, input: ReportTemplateInput) =>
+    patch<{ ok: boolean }>(`/report-templates/${id}`, input),
+  deleteReportTemplate: (id: number) => del<{ deleted: number }>(`/report-templates/${id}`),
+  setDefaultReportTemplate: (id: number) => post<{ ok: boolean }>(`/report-templates/${id}/default`, {}),
   updateTaskLLMProfiles: (id: string, llmProfileIds: number[], activeLLMProfileId?: number) =>
     put<{
       id: string;
@@ -1363,6 +1394,9 @@ export const api = {
     session_header_key?: string; // 非空=每次请求带该 HTTP 头，头值=当前会话 session id；""=不发送
     user_agent?: string; // LLM 请求的 User-Agent；""=保持 SDK/Go 默认
     retry?: LLMRetryOverride; // 本配置的重试覆盖；各项留 0 = 跟随全局重试策略
+    // 通道自定义单价（USD / 1M tokens）；0 = 回退内置参考价。
+    input_price_per_mtok?: number;
+    output_price_per_mtok?: number;
   }) => post<{ id: number }>("/llm/profiles", p),
   deleteLLMProfile: (id: string) => del<{ deleted: number }>(`/llm/profiles/${id}`),
   activateLLMProfile: (id: string) => post<{ ok: boolean }>("/llm/profiles/active", { id: Number(id) }),

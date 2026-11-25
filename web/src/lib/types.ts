@@ -1443,6 +1443,10 @@ export interface LLMProfile {
   user_agent?: string;
   // 本配置对重试的覆盖（建连/空响应/同 provider 安全窗口）。留空/全 0 = 跟随全局策略。
   retry?: LLMRetryOverride;
+  // 通道自定义单价（USD / 1M tokens）。0 = 未声明，成本核算回退内置参考价。
+  // 自有网关/中转站的实际折扣价与公开标价差异很大，只有用户自己填的才准。
+  input_price_per_mtok?: number;
+  output_price_per_mtok?: number;
 }
 
 // ---- LLM 重试策略 ----
@@ -2230,3 +2234,90 @@ export interface C2ConfigPatch {
   key?: string;
   iface?: string;
 }
+
+// ---- 周期任务调度（M-06）----
+// 只调度「新建侦察类任务」，平台不自动触发复测。
+export interface TaskSchedule {
+  id: number;
+  name: string;
+  description: string;
+  goal: string;
+  interval_minutes: number;
+  enabled: boolean;
+  company_ids: number[];
+  timeout_seconds: number;
+  plan_heartbeat_seconds: number;
+  coverage_enabled: boolean;
+  next_run_at: string;
+  last_run_at?: string;
+  last_task_id?: number;
+  last_error?: string;
+}
+
+/** 新建/更新计划时提交的字段（id 与运行状态由后端维护）。 */
+export type TaskScheduleInput = Pick<
+  TaskSchedule,
+  "name" | "description" | "goal" | "interval_minutes" | "enabled" | "company_ids" | "timeout_seconds" | "plan_heartbeat_seconds" | "coverage_enabled"
+>;
+
+// ---- 资产快照与变更检测（M-07）----
+export interface AssetSnapshot {
+  id: number;
+  scope_key: string;
+  asset_count: number;
+  digest: string;
+  created_at: string;
+}
+
+export interface AssetDiffItem {
+  asset_id: number;
+  type: string;
+  label: string;
+}
+
+export interface AssetDiffChange extends AssetDiffItem {
+  old_fingerprint: string;
+  new_fingerprint: string;
+}
+
+export interface AssetDiff {
+  base_id: number;
+  new_id: number;
+  base_at: string;
+  new_at: string;
+  added: AssetDiffItem[];
+  removed: AssetDiffItem[];
+  changed: AssetDiffChange[];
+}
+
+// ---- 开放 API 凭证（M-12）----
+// 同一管理员账号下的程序化凭证，不是多用户；明文只在创建时返回一次。
+export interface APIKey {
+  id: number;
+  name: string;
+  key_hint: string;
+  enabled: boolean;
+  created_at: string;
+  last_used_at?: string;
+  expires_at?: string;
+}
+
+// ---- 报告模板（M-10）----
+// 只影响交付件渲染（页眉/密级/委托方/章节开关），不改数据。
+export interface ReportTemplate {
+  id: number;
+  name: string;
+  is_default: boolean;
+  page_header: string;
+  classification: string;
+  customer_override: string;
+  // 章节开关：缺省键=显示，false=跳过。
+  sections: Record<string, boolean>;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ReportTemplateInput = Pick<
+  ReportTemplate,
+  "name" | "page_header" | "classification" | "customer_override" | "sections"
+>;

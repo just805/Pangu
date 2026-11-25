@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 
 import { AssetDslSearch } from "@/components/asset-dsl-search";
+import { AssetSnapshotDialog } from "@/components/asset-snapshot-dialog";
 import { ScopeTextEditor } from "@/components/scope-text-editor";
 import {
   AlertDialog,
@@ -330,6 +331,7 @@ export default function AssetsPage() {
           <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
             <RefreshCwIcon className={cn("size-4", loading && "animate-spin")} /> 刷新
           </Button>
+          <AssetSnapshotDialog />
           <CompanyDialog onSaved={refresh} />
         </div>
       </div>
