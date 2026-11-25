@@ -50,7 +50,9 @@ PANGU_SKIP_FRONTEND=1 PANGU_SKIP_NPM_CI=1 PANGU_COMPRESS=0 PANGU_PACKAGE=0 \
 ## 3. 发版流程（tag → CI → Release）
 
 1. `CHANGELOG.md` 补节（**编辑前确认锚点存在**——历史上 str.replace 锚点失配静默吞过整节）。
-2. commit → push main → `git tag v0.3.x` → push tag → GitHub Actions 自动出 5 平台 zip + SHA256SUMS + Docker + Release。
+2. commit → push main → `git tag v0.1.x` → push tag → GitHub Actions 自动出 5 平台 zip + SHA256SUMS + Docker + Release。
+   **版本号现行为 v0.1.x 序列**（2026-11-18 起从 v0.4.80 重排为 v0.1.0）；`docs/` 与
+   CHANGELOG 旧节里的 v0.3.x / v0.4.x 是旧编号，新版本号一律在最新 tag 上递增。
 3. CI 门禁与本地等价：`go build ./...`、`go test -p 1`（真 PG）、前端 tsc + `NEXT_EXPORT=1 next build`。
 4. **提示词改动会随 `SeedPromptVersioned` 自动下发**已部署实例（用户手改过的不受影响）——改 worker/planner 默认模板不用写迁移。
 5. **拦截规则新增走 seed 批次**（v1…v5 先例）：除 `seedBuiltinInterceptRulesBatch` 外**必须**配按名补种 + enabled 工具集合并（v4/v5 有真实升级路径缺陷教训：flag 早退会吞掉新规则）。
@@ -82,11 +84,49 @@ agent/          多 Agent 层（planner/worker/mainagent 提示词与工具；�
 db/             PostgreSQL 唯一存储（schema.sql 幂等迁移；拦截规则 seed 批次 v1-v5）
 server/         HTTP 面与引擎调度（全部路由注册在 server.go:680-1000 一带）
 intercept/      三层拦截（规则+LLM judge+ask 审批；judge prompt 在 prompt.go）
-listener/       回连接收器；guard/        审批门（Attributions 已回流 planner 态势）
-traffic/ vulnintel/ llmpool/ selfupdate/ report/（手写 OOXML，勿引第三方文档库） skills/
+guard/          工具调用审批门（PreToolUse；Attributions 已回流 planner 态势）
+listener/       回连接收器
+traffic/        MITM 流量录制 + 出口代理池 + 隐藏服务上游
+vulnintel/      漏洞情报（NVD/KEV/GHSA/PoC 同步、资产指纹联动）
+llmpool/        LLM 多通道轮询（熔断/故障转移）
+llmrec/         LLM 请求录制与 token 计量
+llmguard/      LLM 调用外围守卫（拒答重试等，与 provider 无关）
+netguard/       服务端 HTTP 客户端的出站拨号守卫
+proxyprobe/     代理连通性自测；按 host 分流 Tor/I2P
+mcphttp/        远程 HTTP/SSE MCP 客户端
+sidequestion/   主 Agent 检查点快照（供旁路提问，不持有会话）
+enrich/         资产自动补全（DNS 解析 + HTTP 探测，非 AI）
+reverse/        客户端/二进制静态 triage 与反编译（不执行样本）
+docpreview/     Office/PDF 文档取样渲染成图
+hosttools/      宿主工具体检 + 安装配方
+hostd/          特权助手后端（供 cmd/pangu-hostd 使用）
+evidence/       发现证据独立留存
+notify/         通知推送（钉钉/飞书/企业微信）与事件分发
+selfupdate/     一键自更新
+report/         报告生成（手写 OOXML，勿引第三方文档库）
+skills/         24 个内置技能（新增需绑默认可见性，守门测试 db/skill_visibility_test.go）
+mcp-servers/    内置 MCP server（fofa）
 web/            Next.js 前端（src/app 路由；lib/api.ts 单一 API 封装）
 docs/           设计文档 + 阶段报告（按日期命名的是阶段性快照，越新的越权威）
 ```
+
+### 5.1 核心链路入口（2026-11-26 对照代码核对；行号会漂移，按函数名找）
+
+- **调度**（`server/engine.go`）：`Run` 启动 → `plannerLoop`（`Task.Notify` 边沿 + 心跳唤醒
+  → 800ms debounce → `runPlannerRound`；心跳下限 600s）+ `workerLoop`（`runWorkerStep` →
+  `claimNext`：`Frontier(20)` 逐个 `ClaimIntent` CAS 领取）→ `runIntent`（唯一的执行+结算点）。
+- **任务准入**（`server/goals.go`）：`launchTask` → `admitTask`（唯一准入，含排队）→
+  `startAdmittedTask` → 第 0 轮目标拆解（`DecomposeGoalsWithProvider`）之后才 `engine.Run`。
+- **收尾**：`server/engine_timeout.go`（`settleTask` / `settleTerminalStatus`）、
+  `server/auto_finish.go`（`evaluateAutoFinish`）。
+- **拦截链**：工具调用 → `guard.Guard.preToolUse` → `applyIntercept`（`guard/guard.go`）→
+  `interceptor.MatchWithContext` 规则匹配（含 `server/scope_guard.go` 的授权范围守卫）→
+  未命中走 `Judge` 兜底研判、规则动作为 judge 走 `JudgeRuleWithTimeout` →
+  deny 直接 `block`，ask 走 `HandleAsk` 人工审批。装配：`server/manager.go`
+  `guard.NewWithInterceptor`，`server/intercept.go` `wireInterceptReviewer` 注入裁判模型。
+- **HTTP**：路由全在 `server/server.go`；认证中间件 `requireAuth`（`server/auth.go`，
+  jti 会话 + 吊销哨兵 `server/session_revoke.go`）。
+- `docs/02-引擎与调度闭环.md` 的行号已漂移，机制描述仍可用。
 
 ## 6. 文档权威顺序（同一话题以新为准）
 
