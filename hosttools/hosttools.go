@@ -303,12 +303,19 @@ if [ ! -d /opt/SecLists/.git ]; then rm -rf /opt/SecLists; git clone --depth 1 h
 	// 统一走 manual（附官方地址）：这些项目的 release 资产名不规范，硬编码一键配方
 	// 容易装错版本；先保证「家底可见 + 安装路径明确」，后续再逐个人工验证配方。
 	{Name: "arjun", Purpose: "HTTP 参数发现(隐藏参数枚举)", Kind: KindPip, Category: CatWeb, Pip: "arjun"},
+	// M-01 模糊测试：契约驱动（OpenAPI/Swagger 自动生成参数组合并校验响应）。
+	// 与 fuzz_plan 的 api 模式配套；装不上时工具会退回让模型直接手写契约用例。
+	{Name: "schemathesis", Purpose: "基于 OpenAPI/Swagger 契约的属性化 API 模糊测试", Kind: KindPip, Category: CatWeb, Pip: "schemathesis"},
 	{Name: "jwt_tool", Purpose: "JWT 测试(alg 混淆/kid 注入/密钥爆破)", Kind: KindScript, Category: CatWeb,
 		Script: `set -e
 if [ ! -d /opt/jwt_tool/.git ]; then rm -rf /opt/jwt_tool; git clone --depth 1 https://github.com/ticarpi/jwt_tool /opt/jwt_tool; fi
 ln -sf /opt/jwt_tool/jwt_tool.py /usr/local/bin/jwt_tool
 chmod +x /opt/jwt_tool/jwt_tool.py
 `},
+	// M-01 模糊测试：协议模糊框架与通用样本变异器。
+	// boofuzz 生成状态化协议报文做变异；radamsa 给任意样本做畸形输入（配合管道使用）。
+	{Name: "boofuzz", Purpose: "网络协议模糊测试框架(状态化/非状态化协议)", Kind: KindPip, Category: CatExploit, Pip: "boofuzz"},
+	{Name: "radamsa", Purpose: "通用样本变异器(为模糊测试生成畸形输入)", Kind: KindApt, Category: CatExploit, Apt: "radamsa", Dnf: "radamsa"},
 	{Name: "ysoserial", Purpose: "Java 反序列化 payload 生成(需按目标 classpath 选链)", Kind: KindGitHub, Category: CatExploit,
 		Repo: "frohoff/ysoserial", AssetTmpl: "ysoserial-all.jar", Raw: true,
 		DestPath: "/opt/ysoserial.jar", Detect: "path:/opt/ysoserial.jar"},

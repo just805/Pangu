@@ -19,6 +19,8 @@ tags:
 | `http_request` | 原生 HTTP 执行器，cookie jar 跨意图复用 |
 | `session_login` | 建立 A/B 身份登录态 |
 | `http_probe` | 批量探活/指纹，先筛可访问面 |
+| `authz_record` / `authz_matrix` | 角色权限矩阵：建「角色×接口×期望/实测」基线并回填，缺口与越权线索可见（先查再派，避免重复测同一组合） |
+| `fuzz_plan` | 生成模糊测试命令：`api` 契约驱动（schemathesis）、`param` 参数变异（ffuf）；只组命令，Bash 执行，流量照常留痕 |
 | `listener_*` | OOB（SSRF/盲注） |
 
 ## 一、流程
@@ -33,6 +35,8 @@ tags:
    - 水平越权（IDOR）：A 的 token 读 B 的对象；
    - 垂直越权：低权账号打高权接口（返回 200 或仅前端隐藏）；
    - 参数污染/批量赋值：多传 `role/isAdmin/tenantId/userId` 看是否被采纳。
+5. **系统化覆盖**：手工构造边界值收益低、参数位多时，用 `fuzz_plan` 生成契约驱动（`api`）
+   或参数变异（`param`）命令，长跑用 `job_start`，异常样本落 `save_evidence`。
 
 ## 二、测试矩阵
 

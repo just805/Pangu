@@ -757,10 +757,19 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.saveScript(), t.runScript(),
 		// diff_responses：对比两个响应的结构性差异（越权/可枚举/状态机三类的共同基础）。
 		t.diffResponses(),
+		// authz_record / authz_matrix（M-03）：角色权限矩阵——越权测试前建基线、测完回填，
+		// 同一接口的多角色结论复用，缺口与无证据结论可见。
+		t.authzRecord(), t.authzMatrixTool(),
 		// api_contract：读目标暴露的 API 契约文件，拿到比爬虫更准的接口清单。
 		t.apiContractTool(),
 		// search_recent_critical：按【时间】查最近披露的高危漏洞（不需先知道组件名/CVE 号）。
 		t.searchRecentCritical(),
+		// fuzz_plan（M-01）：模糊测试命令生成（契约驱动/协议/参数变异），只落脚本+组命令。
+		t.fuzzPlan(),
+		// finding_fields（M-11）：漏洞字段定义（schema）查询——按口径填报、CVSS 自动算分。
+		t.findingFields(),
+		// compliance_checklist / compliance_record（M-09）：合规基线核查清单与结果回填。
+		t.complianceChecklist(), t.complianceRecord(),
 		// save_evidence / list_artifacts：证据附件（v0.5.0）——截图/数据样本/日志
 		// 落盘登记，随报告导出证据包；报告里用 ![说明](artifact:<id>) 引用。
 		t.saveEvidence(), t.listArtifacts(),
@@ -804,10 +813,18 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.authRequest(),
 		t.httpRequest(), t.sessionLogin(),
 		t.diffResponses(), t.diffResponses(),
+		// authz_record / authz_matrix（M-03）：人在环路上也可直接补矩阵/看缺口。
+		t.authzRecord(), t.authzMatrixTool(),
 		// api_contract：读目标暴露的 API 契约文件，拿到比爬虫更准的接口清单。
 		t.apiContractTool(),
 		// search_recent_critical：按【时间】查最近披露的高危漏洞（不需先知道组件名/CVE 号）。
 		t.searchRecentCritical(),
+		// fuzz_plan（M-01）：模糊测试命令生成（mainagent 与 worker 同款）。
+		t.fuzzPlan(),
+		// finding_fields（M-11）：人在环路上也可查漏洞字段口径。
+		t.findingFields(),
+		// compliance_checklist / compliance_record（M-09）：人也可直接补合规核查结果。
+		t.complianceChecklist(), t.complianceRecord(),
 	}
 }
 

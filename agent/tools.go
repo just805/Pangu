@@ -718,6 +718,14 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 			if c, ok := fp["confidence"].(string); ok && c != "" {
 				m["confidence"] = c
 			}
+			// 三态收口（M-04）：把「已排除 / 未验证」带进态势，规划者不必点进
+			// node_detail 才能分辨否定结论的性质；confirmed 是默认值，不占位输出。
+			if v := verdictOfNode(n); v != FactConfirmed {
+				m["verdict"] = v
+				if cp, ok := fp["control_point"].(string); ok && strings.TrimSpace(cp) != "" {
+					m["control_point"] = clampRunes(cp, 60)
+				}
+			}
 		}
 		recentFacts = append(recentFacts, m)
 	}
@@ -763,6 +771,14 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	if t.ts != nil {
 		if rs, err := t.ts.RecentReflections(8); err == nil && len(rs) > 0 {
 			out["recent_lessons"] = compactLessons(rs)
+		}
+	}
+	// 角色权限矩阵缺口（M-03）：越权方向的覆盖度一眼可见——哪些 角色×接口 组合还没测、
+	// 哪些越权线索（expected≠observed）还没确认、哪些结论没有流量证据。
+	// 只在有矩阵条目时输出，未用过该能力的任务不占位。
+	if t.ts != nil && t.taskID > 0 {
+		if st, err := t.ts.Authz().Stats(t.taskID); err == nil && st.Total > 0 {
+			out["authz_matrix"] = st
 		}
 	}
 	// cold-digest §6.1: 折叠冷区的 digest body，按最新成员时间降序取前 N；被截的更旧 digest
@@ -1322,6 +1338,11 @@ func compactFact(n *db.Node) map[string]any {
 		m["summary"] = string([]rune(s)[:factSummaryMax]) + "…"
 		m["summary_truncated"] = true
 	}
+	// 三态收口（M-04）：让 planner 一眼看出哪些结论是「已排除 / 未验证」，
+	// 不必点进 node_detail 才能分辨。confirmed 是默认值，不额外占位输出。
+	if v := verdictOfNode(n); v != FactConfirmed {
+		m["verdict"] = v
+	}
 	return m
 }
 
@@ -1418,6 +1439,7 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 	}
 	// 先校验锚点（建节点前，避免坏锚点留下孤儿意图）。
 	parents := pidList(it.ParentIDs)
+	parentNodes := make([]*db.Node, 0, len(parents))
 	for _, pidv := range parents {
 		n, err := t.ts.GetNodeWithSources(pidv)
 		if err != nil || n == nil {
@@ -1426,6 +1448,11 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 		if n.Kind != db.KindFact && n.Kind != db.KindFinding {
 			return 0, fmt.Errorf("parent_id %d 是 %q 节点，不能作为意图锚点：意图只能锚在已确认的【事实(fact)/发现(finding)】上，不能挂在意图/目标/提示上；顶层全新方向请留空 parent_ids", pidv, n.Kind)
 		}
+		parentNodes = append(parentNodes, n)
+	}
+	// 派单计划编译器（M-05）：已排除的结论不能作为新方向的依据。
+	if msg := dispatchParentVerdictError(parentNodes); msg != "" {
+		return 0, fmt.Errorf("%s", msg)
 	}
 	priority := it.Priority
 	if priority == 0 {
@@ -1479,6 +1506,11 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 		}
 	}
 	anchors := pidList(it.AssetIDs)
+	// 派单计划编译器（M-05）：锚点资产必须在任务授权范围内——写回闸门要等
+	// worker 跑完一轮才生效，派单前拦代价小得多。
+	if msg := t.dispatchScopeError(anchors); msg != "" {
+		return 0, fmt.Errorf("%s", msg)
+	}
 	// 资产拦截：意图绑定的资产若命中系统资产拦截规则，则禁止下发该意图。
 	if t.as != nil && len(anchors) > 0 {
 		hits, err := t.as.CheckAssetsIntercept(t.taskID, anchors)
@@ -1930,6 +1962,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		"vulnclass": str("漏洞类别,【必须】从标准类别里选:" + db.VulnClassPromptText() + "。具体 CVE/漏洞编号写进 name,类别选「已知漏洞」;实在不属于任何一类才用「其他」"), "name": str("漏洞名称"), "severity": str("critical|high|medium|low"), "summary": str("发现摘要"),
 		"intent_id": idp("当前任务的意图 id"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "受影响资产 id"},
 		"evidence":         str("证据/PoC 文本"),
+		"cvss_vector":      str("可选：CVSS v3.1 向量串（八项齐全，如 CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H）。平台按它自动算分并把分差回给你；不填则只按 severity 走证据闸门。"),
 		"root_cause_key":   str("可选：跨端点标识同一根因的稳定短标识（例如 jwt-alg-none、idor-order-owner）。同一根因在不同端点上的上报会据此归并；不确定时省略——省略只会少合并，不会错合并。"),
 		"evidence_hint_id": idp("可选：本任务中对应此漏洞的提示节点 ID，自动携带其结构化 traffic_refs；不能引用继承提示或其他漏洞的提示"),
 		"traffic_refs": map[string]any{"type": "array", "description": "可选；HTTP/HTTPS 漏洞先检索并逐条核实请求/响应确实支持漏洞结论，再按复现顺序填写真实 ID。TCP 等非 HTTP 漏洞、未采集或找不到确切记录时省略或传 []，不阻止上报；可在 evidence 说明原因并提供其他可验证证据。不要猜测 ID、按域名/时间推定关联或仅为补包重复探测。用途 baseline 正常对照 / proof 漏洞证明 / verification 补充验证 / supporting 辅助证据。若某个 ID 不存在，漏洞仍会正常入库，该 ID 会在返回值的 skipped_traffic_refs 里列出，可用 traffic_get 核实后用 bind_finding_traffic 补绑。",
@@ -1942,6 +1975,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			AssetIDs                                     []json.RawMessage `json:"asset_ids"`
 			TrafficRefs                                  []db.TrafficRef   `json:"traffic_refs"`
 			EvidenceHintID                               json.RawMessage   `json:"evidence_hint_id"`
+			CVSSVector                                   string            `json:"cvss_vector"`
 		}
 		if err := json.Unmarshal(normalizeFindingInput(in), &a); err != nil {
 			return actool.Errorf(err.Error()), nil
@@ -1963,6 +1997,24 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		// 工具命中结果等可机械复现的验证凭据。纯版本匹配不通过。
 		if msg := validateMechanicalEvidence(a.Severity, a.Evidence); msg != "" {
 			return actool.Errorf(msg), nil
+		}
+		// CVSS 自动算分（M-11）：模型给 vector、平台算分——数字不由模型自评。
+		// 向量非法时直接打回（给正确格式），而不是忽略后让 severity 继续裸奔。
+		var cvssScore *float64
+		cvssNote := ""
+		if v := strings.TrimSpace(a.CVSSVector); v != "" {
+			score, sev, ok := ParseCVSS31(v)
+			if !ok {
+				return actool.Errorf(cvssVectorSupportHint(v)), nil
+			}
+			cvssScore = &score
+			// 与模型自评的 severity 对不上时提示（不阻断——业务影响可能被低估/高估，
+			// 但报告读者需要看到这个矛盾）。
+			if sev != "none" && sev != strings.ToLower(strings.TrimSpace(a.Severity)) {
+				cvssNote = fmt.Sprintf("CVSS %s 折算为 %.1f 分（%s），与你填的 severity=%s 不一致："+
+					"请复核——若业务影响确实更严重/更轻微，在 summary 里写明理由；否则按 CVSS 档位修正 severity。",
+					v, score, sev, a.Severity)
+			}
 		}
 		// 证据逐字回验（v0.4.29，P0b #2，PentestGPT 机制自研）：先告警后拦截。
 		// 证据里至少要有一行能在本次 run 的真实工具回显里逐字找到出处——
@@ -2021,7 +2073,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if msg := t.scopeGuardError(pidList(a.AssetIDs)); msg != "" {
 			return actool.Errorf(msg), nil
 		}
-		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, RootCauseKey: a.RootCauseKey, Worker: t.worker, AssetIDs: pidList(a.AssetIDs), CrossTaskNotifyDedup: t.CrossTaskNotifyDedup}
+		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, RootCauseKey: a.RootCauseKey, Worker: t.worker, AssetIDs: pidList(a.AssetIDs), CrossTaskNotifyDedup: t.CrossTaskNotifyDedup, CVSSVector: strings.TrimSpace(a.CVSSVector), CVSSScore: cvssScore}
 		var recorded *db.RecordedFinding
 		if t.findingRecorder != nil {
 			recorded, err = t.findingRecorder.Record(ctx, input, refs)
@@ -2060,7 +2112,10 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			ChainIntentID      int64        `json:"chain_intent_id,omitempty"`
 			SRCReview          any          `json:"src_review,omitempty"`
 			ChainNote          string       `json:"chain_note,omitempty"`
-		}{RecordedFinding: recorded, EvidenceStatus: "bound", EvidenceVerifyNote: verifyNote, SRCReview: review, VerificationAudit: audit}
+			SeverityFloorNote  string       `json:"severity_floor_note,omitempty"`
+			CVSSScore          *float64     `json:"cvss_score,omitempty"`
+			CVSSNote           string       `json:"cvss_note,omitempty"`
+		}{RecordedFinding: recorded, EvidenceStatus: "bound", EvidenceVerifyNote: verifyNote, SRCReview: review, VerificationAudit: audit, CVSSScore: cvssScore, CVSSNote: cvssNote}
 		if len(recorded.CrossTaskDupTasks) > 0 {
 			ids := make([]string, 0, len(recorded.CrossTaskDupTasks))
 			for _, tid := range recorded.CrossTaskDupTasks {
@@ -2095,6 +2150,12 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		// 复核缺口：放在重复/未绑定提示之后，确保不被前面的赋值覆盖。
 		if note := auditNote(audit); note != "" {
 			result.EvidenceNote = strings.TrimSpace(result.EvidenceNote + " " + note)
+		}
+		// 定级下限（M-04）：有机械验证凭据却报了 low，提示复核。只提示不阻断——
+		// 上限闸门（validateMechanicalEvidence）已经挡住了「没证据硬报高危」，
+		// 下限要挡的是相反的失真。
+		if note := severityFloorNote(a.Severity, a.Evidence); note != "" {
+			result.SeverityFloorNote = note
 		}
 		// 部分引用没挂上（流量 ID 不存在/正文不可读）：漏洞已入库，但要让模型
 		// 知道哪几条证据没生效，否则它会以为证据齐全、报告里就少了这段。
@@ -2138,8 +2199,13 @@ type factItem struct {
 	Detail     string            `json:"detail"`
 	Evidence   string            `json:"evidence"`   // 一行关键证据（命令+关键输出行），支撑结论、便于事后核对
 	Confidence string            `json:"confidence"` // observed（直接看到）| inferred（据现象推断）
-	IntentID   json.RawMessage   `json:"intent_id"`
-	AssetIDs   []json.RawMessage `json:"asset_ids"`
+	// Verdict 是三态收口（M-04）：confirmed（默认）| ruled_out（已排除）| open_proof_gap（未验证）。
+	// 空值按 confirmed 处理，兼容既有调用方。
+	Verdict string `json:"verdict"`
+	// ControlPoint 仅在 verdict=ruled_out 时必填：哪个防护 + 卡在哪一步 + 哪次请求证明。
+	ControlPoint string            `json:"control_point"`
+	IntentID     json.RawMessage   `json:"intent_id"`
+	AssetIDs     []json.RawMessage `json:"asset_ids"`
 }
 
 // recordOneFact 写一条 fact 节点并连到意图（intent→yields→fact）。defaultIntent 为
@@ -2148,7 +2214,23 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	if strings.TrimSpace(it.Summary) == "" {
 		return 0, fmt.Errorf("summary 不能为空")
 	}
+	// 三态收口（M-04）：否定结论必须可核验。校验发生在建节点之前——写进去再报错
+	// 会让图谱留下一条口径不明的「已排除」。
+	verdict := normalizeFactVerdict(it.Verdict)
+	if verdict == "" {
+		return 0, fmt.Errorf("verdict 取值无效（%q）：只能是 confirmed（有证据支撑的结论）、"+
+			"ruled_out（已排除，需带 control_point）、open_proof_gap（未验证）；不确定时省略该字段", it.Verdict)
+	}
+	if msg := validateFactVerdict(verdict, it.ControlPoint, it.Evidence, it.Confidence); msg != "" {
+		return 0, fmt.Errorf("%s", msg)
+	}
 	payload := map[string]any{"summary": it.Summary}
+	if verdict != FactConfirmed {
+		payload["verdict"] = verdict
+	}
+	if cp := strings.TrimSpace(it.ControlPoint); cp != "" {
+		payload["control_point"] = cp
+	}
 	if it.Detail != "" {
 		payload["detail"] = it.Detail
 	}
@@ -2364,14 +2446,17 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 		"⚠️只写你在工具输出里【真实看到】的结论，不要脑补。evidence 与 confidence 用来防止不准确的结论污染图谱：\n"+
 		"  · evidence=支撑本结论的【一行】关键证据（命令+最能证明的那一两行输出），**务必简洁**——细节已在 detail，这里不要再粘大段输出。\n"+
 		"  · confidence=observed（输出里直接看到）| inferred（据现象推断）。\n"+
-		"  · **否定类结论**（不可注入/端口关闭/未发现入口等）只写\"观察 + 试探性读法\"——陈述你实际看到什么，方向是否放弃由规划者综合全局定；务必给 evidence，手段没穷尽或证据弱（含只探一次、看起来像）标 inferred，确已穷尽且直接看到才标 observed。",
+		"  · **否定类结论**（不可注入/端口关闭/未发现入口等）只写\"观察 + 试探性读法\"——陈述你实际看到什么，方向是否放弃由规划者综合全局定；务必给 evidence，手段没穷尽或证据弱（含只探一次、看起来像）标 inferred，确已穷尽且直接看到才标 observed。\n"+
+		"  · **verdict 三态收口**：confirmed（默认，有证据支撑的结论）| ruled_out（已排除：必须填 control_point，指名【哪个防护 + 卡在攻击路径哪一步 + 哪次请求证明】）| open_proof_gap（未验证：做了探测但证据不足以定论，不允许静默算通过）。否定结论能用 ruled_out 就别只写「未发现」。",
 		obj(map[string]any{
-			"facts":      map[string]any{"type": "array", "description": "【有多条不同结论时用】事实数组，元素字段同下方顶层字段（summary/detail/evidence/confidence/intent_id/asset_ids）；省略 intent_id 则用顶层 intent_id。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
+			"facts":      map[string]any{"type": "array", "description": "【有多条不同结论时用】事实数组，元素字段同下方顶层字段（summary/detail/evidence/confidence/verdict/control_point/intent_id/asset_ids）；省略 intent_id 则用顶层 intent_id。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
 			"summary":    str("对本次探索结论的【总结性一句话】（是对 detail 的概括）"),
 			"intent_id":  idp("产生本事实的意图 id（你领到的意图；批量时作为各条默认）"),
 			"detail":     str("本事实的相关细节：把这次探索的多个观察事实都写进这里"),
 			"evidence":   str("【一行】关键证据：命令 + 最能证明结论的那一两行输出。务必简洁，不要粘大段输出（细节放 detail）。"),
 			"confidence": str("observed（输出里直接看到）| inferred（据现象推断）。否定结论务必如实标注。"),
+			"verdict":    str("三态收口：confirmed（默认）| ruled_out（已排除）| open_proof_gap（未验证）。"),
+			"control_point": str("仅 verdict=ruled_out 时必填：哪个防护（WAF/鉴权/参数化查询/白名单等）+ 卡在攻击路径哪一步 + 哪次请求或输出证明。"),
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选，0/1/多个）：该事实涉及哪些资产"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
@@ -3088,8 +3173,17 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.authRequest(),
 		// diff_responses：对比两个响应的结构性差异（越权/可枚举/状态机三类的共同基础）。
 		t.diffResponses(),
+		// authz_matrix（M-03）：规划时先看权限矩阵与缺口，避免重复派已测过的越权组合。
+		t.authzMatrixTool(),
 		// api_contract：读目标暴露的 API 契约文件，拿到比爬虫更准的接口清单。
 		t.apiContractTool(),
+		// fuzz_plan（M-01）：模糊测试命令生成——规划阶段把「数据边界/资源假设」排成
+		// 可执行动作（契约驱动 API 模糊 / 协议模糊 / 参数变异）。
+		t.fuzzPlan(),
+		// finding_fields（M-11）：规划时也能查漏洞字段口径（planner 自己也可能报漏洞）。
+		t.findingFields(),
+		// compliance_checklist（M-09）：规划时看合规缺口，判断要不要派核查意图。
+		t.complianceChecklist(),
 		// search_recent_critical：按【时间】查最近披露的高危漏洞（不需先知道组件名/CVE 号）。
 		t.searchRecentCritical(),
 		// 微信小程序：解包产物静态审计（接口/密钥/云开发信息），规划判方向用。

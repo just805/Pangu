@@ -185,6 +185,7 @@ tags:
 | 并发竞态验证 | `python3` 脚本（2~5 并发，小规模） |
 | 参数差异对照 | `diff_responses` 工具（对两个响应做结构化差分，自动滤时间戳/trace id 等噪声） |
 | 目录/参数枚举 | `ffuf` / `feroxbuster` / `gobuster` |
+| 系统化模糊测试 | `fuzz_plan` 工具（`api` 契约驱动 schemathesis / `param` 参数变异 ffuf / `protocol` 协议模糊 boofuzz；只组命令，长跑用 `job_start`） |
 | 接口枚举 | `katana` / `api-recon` skill |
 | Web 指纹 | `whatweb` / `httpx` / `wafw00f` |
 | 主机/服务侧 | `nmap` / `naabu` |
