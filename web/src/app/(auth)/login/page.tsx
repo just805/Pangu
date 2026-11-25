@@ -351,13 +351,25 @@ export default function LoginPage() {
   );
 }
 
-// 品牌标识：盾牌 + “盘古 / PANGU”。全部内联，避免独立图片资源被测绘。
+// 品牌标识：Pangu「开天」logo（深墨底 + 天地双弧 + 光缝核心）+ “盘古 / PANGU”。
+// SVG 全部内联，避免独立图片资源被测绘（登录页指纹策略，见文件头注释）。
 function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center gap-2.5">
-      <div className="flex size-9 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 shadow-sm">
-        <ShieldHalf className="size-4 text-primary" />
-      </div>
+      <svg viewBox="0 0 64 64" className="size-9 shrink-0" aria-hidden="true">
+        <rect x="1" y="1" width="62" height="62" rx="15" fill="#0b1120" />
+        <path d="M11 33 Q32 7 53 33" fill="none" stroke="#fb923c" strokeWidth="3.4" strokeLinecap="round" />
+        <path d="M11 33 Q32 59 53 33" fill="none" stroke="#e11d48" strokeWidth="2.6" strokeLinecap="round" opacity=".85" />
+        <path d="M15 32 L49 32" fill="none" stroke="#fff7ed" strokeWidth="3.4" strokeLinecap="round" opacity=".9" />
+        <path d="M32 25.5 L36 32 L32 38.5 L28 32 Z" fill="#fff7ed" />
+        <path d="M32 28 L34 32 L32 36 L30 32 Z" fill="#fb923c" />
+        <circle cx="24" cy="17" r="1.5" fill="#fbbf24" />
+        <circle cx="32" cy="13.5" r="1.9" fill="#fbbf24" />
+        <circle cx="40" cy="17" r="1.5" fill="#fbbf24" />
+        <circle cx="24" cy="47" r="1.3" fill="#fb923c" opacity=".7" />
+        <circle cx="32" cy="50" r="1.6" fill="#fb923c" opacity=".85" />
+        <circle cx="40" cy="47" r="1.3" fill="#fb923c" opacity=".7" />
+      </svg>
       <div className="leading-tight">
         <div className="flex items-baseline gap-2">
           <span className="font-semibold text-base tracking-[0.2em]">盘古</span>

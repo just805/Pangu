@@ -2,6 +2,20 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.27] - 2026-11-25
+
+### 变更（品牌重塑）
+
+- **全站 logo 换为 Pangu 专属「开天」标识**：此前浏览器标签页 `web/src/app/icon.png`
+  仍是上游 ARTEX 紫色 logo（带文字），侧边栏/登录页沿用旧的「劈星」星形——对外
+  品牌混乱。新标识以「盘古开天」为意象：深墨圆角底 + 天地双弧（形似洞察之眼）
+  + 一道贯通的天地分界光缝 + 中央菱形核心，上三粒清气、下三粒浊气；沿用原
+  橙→红品牌色系，16px 下仍可辨识。落点：`web/public/logo.svg`（主源）、
+  `logo-mono.svg`（单色版）、`logo.png`/`icon.png`/`favicon.ico` 多尺寸、
+  `web/src/app/icon.png` 与 `app/favicon.ico`、登录页内联 SVG 品牌标记、
+  `server/webui/dist` 内嵌图标、`screenshots/pangu-logo.png`（README 引用）。
+  登录页保持「品牌 SVG 内联」策略——不加载独立图片资源被测绘。
+
 ## [0.1.26] - 2026-11-25
 
 ### 修复（UX 打磨批）
