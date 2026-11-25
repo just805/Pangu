@@ -2,6 +2,188 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 新增（结论可信度：否定结论三态收口 + 派单确定性校验）
+
+- **`record_fact` 三态收口（M-04）**：事实新增 `verdict`（confirmed｜ruled_out｜
+  open_proof_gap）与 `control_point`。此前「已排除」只是模型一句自由文本，无法回答
+  「哪个控制点挡住的、卡在哪一步、哪次请求证明」；现在 `ruled_out` 必须指名控制点
+  并附证据，否则打回并给出改判 `open_proof_gap` 的退路；`open_proof_gap` 不允许标
+  `observed`（没定论不可能是直接看到）。空值按 `confirmed` 处理，历史调用方与历史
+  数据不受影响。三态随 `list_facts` / `graph_overview`（`verdict` +
+  `control_point`）带进 planner 态势，规划者不必点进 `node_detail` 才能分辨否定
+  结论的性质。
+- **定级下限复核提示（M-04）**：证据里已有可机械复现的验证凭据、severity 却给
+  `low` 时，`report_finding` 回执带 `severity_floor_note` 提示复核——只提示不阻断。
+  既有的 `validateMechanicalEvidence` 管的是上限（没证据不许报高危），这条补的是
+  相反的失真（有实锤被写成低危）。
+- **报告「覆盖与排除」消费三态（M-04）**：`Coverage` 新增 `excluded`（已排除方向 +
+  拦截控制点表）与 `open_proof_gaps` 计数，Word 报告该章直接列「排掉了哪些方向、
+  依据是什么」，取代原先那句笼统的排除说明；未配测试范围但有排除结论时也会出这一节。
+  页面预览的 Markdown 同步补上同一小节（A17 页面与导出同源）。
+- **派单计划编译器（M-05）**：`add_intent` 新增两条确定性校验——① 意图锚点资产必须
+  在任务授权范围内（任务未声明范围时保守放行，与 N2 scope 守卫取向一致；只拦完全
+  越界的 foreign，继承来源资产放行）；② `verdict=ruled_out`（已排除）的结论不能作为
+  新方向的依据，需先针对控制点派绕过验证意图或修正事实。写回闸门要等 worker 跑完
+  一轮才生效，派单前拦截代价小得多。
+
+### 新增（挖掘深度：模糊测试引擎 M-01）
+
+- **`fuzz_plan` 领域工具**：把「数据边界 / 资源假设」两个挖掘维度从「模型现场手写
+  脚本」变成平台可编排动作。三种模式——`api` 契约驱动（schemathesis 按 OpenAPI/
+  Swagger 生成参数组合）、`param` 参数变异（ffuf 在 `FUZZ` 占位处换值）、`protocol`
+  协议模糊（落 boofuzz 骨架脚本）。与 `http_probe`/`api_contract` 同一模式：**只落
+  脚本 + 组命令，不自己发请求**——流量照常过记录代理留痕、审批照常生效，长跑交给
+  既有 `job_*` 作业，不新增后台协程。
+  - 所有命令由 GNU `timeout` 包装，请求数（默认 500/上限 5000）、速率（默认 5/上限
+    50）、时长（默认 300s/上限 3600s）均夹逼到安全区间，避免把目标打挂。
+  - 请求头严格校验：拒绝 CRLF 注入与 `@` 前缀（后者会被 curl 当成读取本地文件）。
+  - 契约参数随 schemathesis 版本变化时返回明确提示而不是假装成功；boofuzz 骨架
+    脚本注明「须按真实协议字段改写」，未启用工作目录时直接报错。
+  - 注册进 Worker/Planner/MainAgent 三张工具清单（`BuiltinToolSeeds` 随之自动收录）。
+- **宿主工具新增**：`schemathesis`（pip，Web 契约模糊）、`boofuzz`（pip）、
+  `radamsa`（apt）——「宿主环境」页可一键装齐。
+- 技能 `api-security-testing`、`vuln-hunting` 补 `fuzz_plan` 的工具映射与使用时机
+  （手工构造边界值收益低、参数位多时改用它）。
+
+### 新增（越权测试：角色权限矩阵 M-03）
+
+- **`authz_record` / `authz_matrix` 工具 + `authz_matrix` 表**：把「哪个角色能访问
+  哪个接口」从模型的工作记忆变成任务级结构化数据。`role × host × method × path`
+  唯一、重复上报覆盖更新；`expected`/`observed` 都是 allow|deny|unknown 三态。
+  - 缺口可见：`unknown` 是还没测的组合，`suspicious` 是期望与实测不一致的越权线索，
+    `no_evidence` 是有结论但没绑流量——三者都进 planner 态势（`authz_matrix`）。
+  - 只是线索不是结论：不一致仍需 `traffic_id` 指向的真实请求响应确认，确认后照常
+    `report_finding`，与证据闸门同一口径。
+  - 随任务删除显式清理（无外键，避免遗留行被后续任务按 id 误读）。
+
+### 新增（成本核算：通道自定义单价 M-15）
+
+- **`llm_profiles` 新增 `input_price_per_mtok` / `output_price_per_mtok`**：内置参考价
+  是公开标价近似值，覆盖不到自有网关/中转站的折扣价。填了之后，任务成本与洞察页
+  按真实单价计算；留 0 回退内置参考价，两者都没有时仍上报 `unpriced_models`（不静默
+  算成免费）。价格列走独立 UPDATE，不动既有 Insert/Update 大 SQL 的参数编号。
+  - LLM 配置页新增「成本单价（USD / 百万 token）」输入；`db.ListProfiles` 回显价格。
+
+### 新增（持续运营：周期任务调度 M-06）
+
+- **`task_schedules` 表 + `/api/schedules` CRUD + 30s 调度循环 + 「周期任务」页**：
+  按周期自动新建侦察/攻击面任务。
+  - **硬边界**：只调 `launchTask` → `admitTask`，**永不触发复测**（复测纯手动是既定
+    策略），因此天然继承并发上限、FIFO 排队与第 0 轮目标拆解。
+  - 上一轮任务未到终态时顺延一个周期，不叠加执行（避免两个任务同时打同一目标）。
+  - 新建即视为到点（下一 tick 触发一次）；周期下限 15 分钟，防止对同一目标反复扫。
+  - 失败只记 `last_error`，下一周期自然重试；页面提供启停、立即运行、编辑、删除。
+
+### 新增（持续运营：资产快照与变更检测 M-07）
+
+- **`asset_snapshots` / `asset_snapshot_items` 表 + `/api/assets/snapshots` + 资产页
+  「快照变更」对话框**：资产图只有当前状态，回答不了「这次比上次多了什么」。
+  - 采集快照 → 与上一次比较，得到新增 / 消失 / 指纹变化三档。指纹只取影响判断的
+    字段（技术栈/状态码/标题/服务名/开放端口），不含 `last_seen` 等时间列——否则
+    每次 diff 都会全量「变化」。
+  - `digest` 是条目集合的稳定摘要：同内容两次快照得到同一 digest，可先看摘要再决定
+    是否跑完整 diff。
+  - 支持全站与单企业两种范围（`scope_key` = `''` / `company:<id>`）；新增资产可直接
+    进未测清单派单，避免每次全量重扫。
+
+### 新增（开放集成：API Key M-12）
+
+- **`api_keys` 表 + `/api/api-keys` CRUD + 「开放 API」页 + `X-API-Key` 鉴权**：
+  让 CI / 工单 / SOAR 程序化调用平台。
+  - **不是多用户**：这是同一管理员账号下的程序化凭证（平台保持单管理员形态是既定
+    决策）。Key 与 JWT 走完全相同的下游——创建的任务照样受拦截、审批、范围守卫约束。
+  - 安全口径：明文只在创建时返回一次，库里只存 sha256 哈希；`key_hint` 留末 4 位便于
+    辨认；支持有效期；删除立即失效；鉴权查询失败 fail-closed。
+  - 同时支持 `X-API-Key` 头与 `Authorization: Bearer pk_…`（CI 常见写法）。
+
+### 新增（字段与定级：漏洞字段 schema + CVSS 自动算分 M-11）
+
+- **`finding_field_defs` 表 + `finding_fields` 工具 + `report_finding` 的 `cvss_vector`**：
+  字段定义可枚举（key/类型/枚举/必填/说明），内置字段由代码种子写入
+  （`ON CONFLICT DO NOTHING`，不覆盖用户改过的 label/hint）。
+  - **CVSS v3.1 基础评分由平台计算**：模型给向量（八项齐全），平台算分并把
+    「CVSS 折算档位与自评 severity 不一致」写进回执提示。向量非法直接打回并给正确
+    格式——不给算错的分。`findings` 新增 `cvss_vector` / `cvss_score` 两列。
+  - Word 与页面 Markdown 报告的漏洞明细新增 CVSS 行（分数 + 向量），与报告同源。
+  - 自实现公式并按 CVSS 官方基准用例单测（9.8 / 6.1 / 7.8 / 0.0），未引第三方库。
+
+### 新增（交付形态：多格式导出 + 报告模板 M-10）
+
+- **Excel 漏洞清单**：`GET /api/report/export.xlsx`，手写最小 xlsx（inlineStr，
+  零第三方库），列序按甲方台账习惯（严重度/类别/名称/CVSS/影响资产/状态/时间/摘要）。
+- **PDF 报告**：`GET /api/report/export.pdf`，先渲 Word 再用宿主 LibreOffice 转 PDF
+  （与文档预览同一链路）；soffice 未安装时明确返回 503 并提示改用 Word 导出。
+- **`report_templates` 表 + `/api/report-templates` CRUD + 「报告模板」页**：
+  页眉/密级/委托方覆盖 + 章节开关（执行摘要/攻击路径/覆盖与排除/逆向/附录）。
+  没有默认模板时导出一字不变；`sections` 缺省键=显示，只有显式 false 才跳过。
+
+### 新增（开放集成：MCP 服务端出口 M-13）
+
+- **`POST /api/mcp`**：把平台只读能力暴露成 MCP 服务端（Streamable HTTP JSON-RPC），
+  外部 Agent（Claude Code / Codex 等）可直接读取。
+  - 暴露 `list_findings` / `get_finding` / `list_tasks` 三个只读工具；
+    **不暴露任何写操作**（建任务/重跑/取消走开放 API 并需单独设计）。
+  - 鉴权复用 `requireAuth`：JWT 或 API Key 均可，下游管控完全一致。
+  - 手写最小 JSON-RPC（initialize / ping / tools/list / tools/call / notifications），
+    不引 MCP SDK；协议层单测覆盖握手、工具清单、只读边界与错误码。
+
+### 新增（合规：基线核查 M-09）
+
+- **`compliance_results` 表 + `compliance_checklist` / `compliance_record` 工具**：
+  在「找漏洞」之外补「合不合规」。内置等保 2.0 二级（djbh2）与 CIS Web 精简
+  （cis-web）两套基线，每项给出核查方法与期望结果。
+  - 清单把「基线项 + 本任务已有结果」合并呈现，未核查项数直接可见。
+  - 「不符合」必须给证据（看到什么），否则拒绝记录；不符合项由 Agent 显式调用
+    `report_finding` 上报，复用既有证据闸门与报告聚合。
+  - 基线项定义在代码里，升级基线不需要数据迁移。
+
+### 新增（回归评测：靶场判卷 M-14）
+
+- **`eval_benchmarks` 表 + `/api/eval/benchmarks` + 判卷器**：评测基线此前只能聚合
+  真实任务，没有标准答案——换了模型/改了提示词无法判断是变好还是变坏。
+  - 登记靶场任务的标准答案（`vulnclass` + 可选 `asset_keyword`），跑完后机器判卷：
+    `matched` / `missed`（漏报）/ `unexpected`（标准答案外，需人工看是误报还是
+    预期外的真实发现——不直接算误报）。
+  - 类别走 `NormalizeVulnClass` 归一（「SQL注入」与 `sql_injection` 视为同类）；
+    一条实际发现只命中一条标准答案，不重复计数。
+  - 判卷核心是纯函数 `db.ScoreBenchmark`，与 DB 解耦、可单测。
+
+### 新增（测绘数据源归一 M-08，未接线真实凭据）
+
+- **外部测绘记录归一器 `db.NormalizeExternalAsset`**：把 FOFA / Hunter / Quake /
+  Shodan / ZoomEye 的原始记录统一成平台资产口径（type/domain/root_domain/ip/port/
+  url/technologies），支持嵌套字段（如 shodan 的 `http.title`）与 `host:port` 形态。
+  - 类型判定复用 `assets.type` 的 6 类口径（只产 4 类：root_domain/subdomain/ip/service）；
+    未知数据源走通用别名，尽量不丢数据。
+  - **只做字段映射，不发请求、不写库**。各源真实接入需 API 凭据，本机无法验证，
+    接线时把响应逐条喂进归一器即可。
+
+### 新增（设计稿，未实现）
+
+- **`docs/设计稿-代码资产与SAST联动-2026-11-26.md`（M-02）**：代码资产独立表 + 锚点挂图、
+  扫描结果结构化、成分分析接情报库；含 4 项待确认与分阶段计划。
+- **`docs/设计稿-隔离执行沙箱-2026-11-26.md`（M-16）**：首期只做「PoC 预验证」而非
+  「全工具沙箱」；含容器→代理拓扑这一最高风险的 P0 验证项。
+
+### 验证
+
+- `go build ./...`、`go vet ./agent/ ./db/ ./report/ ./hosttools/`；
+- 新增单测：`agent/fact_verdict_test.go`（三态归一/校验、定级下限、节点三态读取、
+  派单父节点校验）、`agent/tools_fuzz_test.go`（三种模式的命令生成、参数夹逼、
+  请求头注入防护、host:port 解析）、`agent/tools_authz_test.go`（三态与条目归一）、
+  `db/authz_matrix_test.go`、`db/task_schedule_test.go`、`db/llm_profile_price_test.go`、
+  `db/asset_snapshot_test.go`、`db/api_key_test.go`、`db/finding_fields_test.go`、
+  `db/report_template_test.go`、`db/compliance_test.go`、`agent/cvss_test.go`、
+  `agent/tools_compliance_test.go`、`report/xlsx_test.go`、`server/mcp_server_test.go`、
+  `db/eval_benchmark_test.go`、`db/external_asset_test.go`；
+- 前端 `npx tsc --noEmit` 与 `NEXT_EXPORT=1 npx next build`（新增 `/system/schedules`
+  路由，静态导出通过）；
+- `go test ./agent/ -count=1`（跳过依赖本机 python3 的契约/差分脚本用例，环境无 python3）、
+  `./db/`（技能可见性含在内）、`./report/`、`./hosttools/`、
+  `./server -run "Report|Coverage|Docx"` 全绿。
+
 ## [0.1.27] - 2026-11-25
 
 ### 变更（品牌重塑）
