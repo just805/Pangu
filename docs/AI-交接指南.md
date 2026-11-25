@@ -1,6 +1,10 @@
 # AI 交接指南（接手本项目的 AI 请先完整读完）
 
-> 最后更新：2026-11-07（v0.4.62 已发布并部署测试机）
+> 最后更新：2026-11-07（旧编号 v0.4.62 已发布并部署测试机）
+> **历史快照（2026-11-26 校订）**：项目现名盘古 Pangu，版本号自 2026-11-18 起从 v0.4.80 重排为
+> v0.1.x——正文里的 v0.3.x / v0.4.x 是旧编号。当前协作规范以仓库根 `AGENTS.md` 为准，版本史以
+> `CHANGELOG.md` 为准，与本文冲突时以二者为准。§2 的测试机 / 公网机 / 仓库路径是当时的环境快照，
+> 未复核，使用前向维护者确认。
 > 读者：接手盘古 Pangu 项目的 AI 助手。本文假设你会读代码、跑测试、操作 Linux。
 > 凭据（SSH/数据库密码/LLM key）**不写入本仓库**（它是公开仓库），只存在于维护者本地记忆文件中——需要时向维护者要。
 
@@ -20,7 +24,7 @@
 
 | 位置 | 内容 |
 |---|---|
-| `D:\xiangmu\aiai\ARTEX` | 主仓工作区（Windows，Git Bash） |
+| `d:\xm-v0.1.0\Pangu` | 主仓工作区（Windows，PowerShell；旧路径 `D:\xiangmu\aiai\ARTEX` 已不用） |
 | `github.com/just805/Pangu` | 主仓（PUBLIC，ghcr.io/just805/pangu 镜像随 tag 自动发布） |
 | `D:\xiangmu\ARTEX-SKILL` → `github.com/just805/pangu-skill` | 单技能可移植版（v2.0，与平台方法论同源，改动要双向同步） |
 | `github.com/chu0119/Norma` | agent harness SDK fork（go.mod replace 指向它；改 SDK 要单独发版并 bump replace 版本） |
@@ -41,7 +45,7 @@
 | 任务终态收尾 | `server/engine_timeout.go`（settleTaskWithReason/runFinalPlannerRound/TaskClock）、`server/auto_finish.go` | goal_met/timeout/auto_idle/auto_coverage/auto_rounds；goalless 任务（无 open goal）frontier 抽干直接 done；收尾前 `warnFindingsWithoutReport` 点名空报告漏洞 |
 | 终态复活 | `server/goals.go` admitTaskWhen + `server/engine_timeout.go` resetTerminalRevival | 任何终态（done/failed/timeout）复活：清 first_run_at/deadline_at（新预算）+ 清引擎闸门 + 清挂起收尾 + **重开 canceled blocked 意图**；回归测试 `server/task_revival_deadline_test.go` |
 | 证据分级与机械验证 | `agent/finding_recorder.go`（validateFindingEvidence/validateMechanicalEvidence）、`agent/tools.go` addFinding（ToolOutputLedger 证据源核验） | critical/high 必须有可机械复现凭据（HTTP 状态码/curl 输出/工具命中），纯版本匹配会被打回；上报时自动回溯绑定同意图产物、自动锚定资产 |
-| 技能体系 | `skills/` 目录（21 个）、`agent/assembly.go`+`server/assembly.go`（wireAgentAugment + SkillIndexBlock 注入 renderSystem）、`db/db.go` builtinSkillVisibility | **新 skill 必须做三件事**：①SKILL.md frontmatter（name/description，缺一加载即空）②加进 builtinSkillVisibility 默认绑定（否则守门测试红）③发布包/镜像含它（build.sh 已 `cp -R skills`）。守门测试：`db/skill_visibility_test.go`（每个 skill 必须绑定或有 optOut；src-hunting 知识库完整性） |
+| 技能体系 | `skills/` 目录（24 个）、`agent/assembly.go`+`server/assembly.go`（wireAgentAugment + SkillIndexBlock 注入 renderSystem）、`db/db.go` builtinSkillVisibility | **新 skill 必须做三件事**：①SKILL.md frontmatter（name/description，缺一加载即空）②加进 builtinSkillVisibility 默认绑定（否则守门测试红）③发布包/镜像含它（build.sh 已 `cp -R skills`）。守门测试：`db/skill_visibility_test.go`（每个 skill 必须绑定或有 optOut；src-hunting 知识库完整性） |
 | Skill 元工具调用率 | `server/assembly.go`（SkillIndexBlock → renderSystem 注入速查块） | **教训**：Skill 是元工具，模型不被 system prompt 显式提醒几乎不会调（曾 56k 调用仅 8 次）。任何「希望 agent 主动用的东西」都要进 system prompt |
 | MCP | `server/server_mgmt.go`（pgSaveMCP 等）、`mcphttp/client.go`（HTTP/SSE）、norma `mcp` 包（stdio）、前端预设 `web/src/app/(main)/system/mcp/page.tsx` mcpPresets | 内置 FOFA MCP 在 `mcp-servers/fofa/`（uv 拉起，相对路径靠服务 cwd=/opt/pangu 或 /app）；**预设 9 个**；新增预设改 mcpPresets 数组 |
 | js_audit（SPA 源码泄露） | `agent/tools_jsaudit.go` | 检测链：HTML→script/chunk→sourceMappingURL+`.map` 兜底→sourcesContent 还原落盘→密钥/接口扫描；**SPA fallback 200≠命中**（要 JSON+sources 才算） |
@@ -57,7 +61,7 @@
 1. **改代码 + 测试**：`go build ./... && go vet ./...`；测试库刷新（见 §2）；`go test ./... -count=1`（已知并行 flake 见 §6，单跑复验判定）；前端改动跑 `cd web && npx tsc --noEmit && NEXT_EXPORT=1 npx next build`。
 2. **同步前端**：`rm -rf server/webui/dist && cp -r web/out/. server/webui/dist/`（**改了前端必须重做**，否则二进制内嵌旧前端）。
 3. **CHANGELOG.md** 加条目（锚点用 `assert` 防 replace 静默失败）。
-4. **commit + tag + push**：`git add -A && git commit && git tag v0.4.x && git push origin main v0.4.x`。版本号小步递增（用户明确要求不提大版本）。本机网络对 GitHub 不稳：push 失败先重试，再走仓库级代理（已配 `git config http.proxy http://127.0.0.1:7897`）。
+4. **commit + tag + push**：`git add -A && git commit && git tag v0.1.x && git push origin main v0.1.x`（现行为 v0.1.x 序列，完整流程以仓库根 `AGENTS.md` 第 3 节为准）。版本号小步递增（用户明确要求不提大版本）。本机网络对 GitHub 不稳：push 失败先重试，再走仓库级代理（已配 `git config http.proxy http://127.0.0.1:7897`）。
 5. **CI（release.yml）自动**：交叉编译 linux amd64+arm64 → zip+SHA256SUMS → GitHub Release → **docker 多架构镜像推 ghcr**。⚠️ CI 会用自己的打包覆盖手动上传的同名资产（属正常，最终自洽）；CI 的 SHA256SUMS 若内容陈旧要手动覆盖。
 6. **部署 Kali**（paramiko 配方）：sftp 上传 `dist/pangu-linux-amd64/pangu` → `systemctl stop pangu`（hostd 一并）→ `install -m 0755 /tmp/pangu /opt/pangu/.pangu.new && mv -f ... /opt/pangu/pangu`（ETXTBSY 安全换装）→ `chown pangu:pangu` → start → `journalctl -u pangu | grep PANGU` 核对版本行 → `/api/health` 200。若改了 skills/mcp-servers/前端，这些也要同步（或直接跑 install.sh 走 file:// 本地源）。
 
