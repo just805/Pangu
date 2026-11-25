@@ -102,59 +102,24 @@ docker compose up -d      # → http://localhost:8787
 | 平台 | 拦截规则 / 审批 / 资产规则 / 代理池 | 三层闸门、待审批动作、资产级规则、多上游轮换 |
 | 平台 | 通知 / 日志 / 系统设置 | 漏洞推送、运行与审计日志、预算/隐藏服务/收尾等全局开关 |
 
-### 3.2 截图导览
+### 3.2 截图
 
 **入口与态势**
 
 | 首次启动初始化管理员，防爆破锁定 | 总览：任务 / 发现 / 资产 / Token 趋势 |
 | :---: | :---: |
-| ![登录](screenshots/pangu-login.png) | ![总览](screenshots/pangu-dashboard.png) |
+| ![登录](<img width="1111" height="593" alt="image" src="https://github.com/user-attachments/assets/1e3375f2-106f-4869-b413-6ab1fbe6e2b9" />
+) | ![总览](<img width="1610" height="889" alt="image" src="https://github.com/user-attachments/assets/b79723ca-da00-4158-a157-5422ce5ee7de" />
+) |
 
 **任务与目标**
 
 | 任务列表：进度与漏洞分布 | 任务详情：多 Agent 会话与规划态势 |
 | :---: | :---: |
-| ![任务列表](screenshots/pangu-tasks.png) | ![任务详情](screenshots/pangu-task-detail.png) |
+| ![任务列表](<img width="1619" height="406" alt="image" src="https://github.com/user-attachments/assets/bd40c670-5383-46e8-9135-88777a465694" />
+) | ![任务详情](<img width="1628" height="932" alt="image" src="https://github.com/user-attachments/assets/7d6455c4-b25f-4db7-ae8c-172aa324a1ad" />
+) |
 
-| 任务总览：目标逐条带验收标准 | 目标管理 / 操作约束：allow/deny 直接约束派单 |
-| :---: | :---: |
-| ![任务总览](screenshots/pangu-task-overview.png) | ![目标与约束](screenshots/pangu-task-goals.png) |
-
-**发现、资产与流量**
-
-| 发现：跨任务漏洞汇总 | 漏洞详情：复现命令 + 证据 + 状态 |
-| :---: | :---: |
-| ![发现](screenshots/pangu-findings.png) | ![漏洞详情](screenshots/pangu-finding-detail.png) |
-
-| 资产台账：企业→域名→IP→服务→接口 | 资产覆盖图：已测节点高亮 |
-| :---: | :---: |
-| ![资产](screenshots/pangu-assets.png) | ![资产覆盖图](screenshots/pangu-assets-graph.png) |
-
-| 全局流量代理：所有 HTTP/S 往来逐请求留存 |
-| :---: |
-| ![流量](screenshots/pangu-traffic.png) |
-
-**情报与平台配置**
-
-| 漏洞情报：CVE / KEV / PoC / 快通道 | 技能库：24 个内置方法论，按需加载 |
-| :---: | :---: |
-| ![漏洞情报](screenshots/pangu-vulnintel.png) | ![技能库](screenshots/pangu-skills.png) |
-
-| MCP 预设：10 个一键接入 | Agent 角色：按角色配模型与可见性 |
-| :---: | :---: |
-| ![MCP](screenshots/pangu-mcp.png) | ![Agent](screenshots/pangu-agents.png) |
-
-| LLM 配置：多通道轮询 / 熔断 / 故障转移 | 宿主环境：94 件工具体检 + 一键装齐 |
-| :---: | :---: |
-| ![LLM](screenshots/pangu-llm.png) | ![宿主环境](screenshots/pangu-hostenv.png) |
-
-| 监听器 / C2：回连与出口管理 | 对话工作台：跨 Agent 对话与工具回放 |
-| :---: | :---: |
-| ![C2](screenshots/pangu-c2.png) | ![对话](screenshots/pangu-chat.png) |
-
-| 系统设置：预算 / 隐藏服务 / 收尾开关 | 领域工具：工具清单与开关 |
-| :---: | :---: |
-| ![设置](screenshots/pangu-settings.png) | ![工具](screenshots/pangu-tools.png) |
 
 ### 3.3 近期新增页面（按菜单直达）
 
@@ -302,13 +267,7 @@ docs/           设计文档 / 部署手册 / 能力对照
 | 系统 | 结论 |
 |---|---|
 | Debian 12 / Ubuntu 22.04 / 24.04 | ✅ 首选（systemd + 系统 PostgreSQL） |
-| macOS 13+ | ✅ 一条命令（brew + launchd，无需 sudo） |
-| Windows 10/11（Docker Desktop） | ✅ 支持（WSL2 后端，工具链在镜像内） |
-| Kali | ⚠️ 可用，滚动更新有升级风险 |
-| RHEL / Rocky / CentOS Stream | ⚠️ 支持，工具覆盖较少，按需自装 |
-| Windows 原生 exe | ❌ 不支持，请用 Docker Desktop / WSL2 |
-
-**硬件**：最低 2 核 4G / 20G；推荐 4 核 8G / 60G（含字典、模板、Playwright、LibreOffice）。
+**硬件**：最低 2 核 4G / 20G；推荐 8 核 16G / 60G（含字典、模板、Playwright、LibreOffice）。
 
 ### 7.2 配置速查
 
