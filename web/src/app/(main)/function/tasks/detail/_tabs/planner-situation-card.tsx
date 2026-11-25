@@ -53,15 +53,19 @@ export function PlannerSituationCard({
 
   const load = React.useCallback(async () => {
     setRefreshing(true);
+    let ok = true;
     try {
       const r = await api.plannerSituation(taskId);
       setData(r);
     } catch {
-      // 静默：态势卡是辅助视图，失败不弹错
+      // 静默：态势卡是辅助视图，失败不弹错；返回 false 让 usePollInterval
+      // 指数退避（后端故障时别把请求打得更密）。
+      ok = false;
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
+    return ok;
   }, [taskId]);
 
   usePollInterval(load, 30000, [taskId]);

@@ -66,6 +66,7 @@ import type {
   InterceptApprovalFilter,
   InterceptApprovalRow,
   InterceptDetail,
+  InterceptHitStat,
   InterceptPending,
   InterceptRule,
   JudgeConfig,
@@ -1581,6 +1582,12 @@ export const api = {
 
   // ---- intercept rules ----
   interceptRules: () => get<{ rules: InterceptRule[] }>("/intercept/rules").then((r) => arr(r.rules)),
+  // 拦截命中统计（N12）：按规则/动作/来源/天聚合。
+  interceptHitStats: (days = 30) =>
+    get<{ days: number; items: InterceptHitStat[] }>(`/intercept/stats?days=${days}`).then((r) => ({
+      days: r.days ?? days,
+      items: arr(r.items),
+    })),
   createInterceptRule: (rule: Omit<InterceptRule, "id" | "created_at" | "updated_at">) =>
     post<InterceptRule>("/intercept/rules", rule),
   updateInterceptRule: (id: number, rule: Omit<InterceptRule, "id" | "created_at" | "updated_at">) =>

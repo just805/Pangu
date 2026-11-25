@@ -2246,7 +2246,9 @@ func (t *Traffic) Tools() []actool.CoreTool {
 		},
 	})
 
-	return []actool.CoreTool{search, get, blob}
+	// N3 http_replay：与 traffic_search/get/blob 同一装配链路（hosttools 注入
+	// worker/planner/mainagent 工具集），无需在三张清单里分别登记。
+	return []actool.CoreTool{search, get, blob, t.ReplayTool()}
 }
 
 // SeedToolMetas returns the traffic tools built on a ZERO receiver, for seeding the

@@ -47,6 +47,12 @@ type Server struct {
 	engine *Engine
 	ctx    context.Context
 
+	// domainTS 是 server 级 domain 工具集（buildDomainReg 创建）：这些工具被
+	// 注入到无 per-task ToolSet 的 agent（Auto/自定义），必须与 worker/planner
+	// 一样走平台出口。SetGlobalProxy 热更新时同步其 egressProxy（工具闭包持有
+	// 同一 *ToolSet 指针，改字段即生效）。
+	domainTS *agent.ToolSet
+
 	skillDir string       // root directory for skill subdirectories
 	keyDir   string       // directory holding jwt.key (next to the executable)
 	dataDir  string       // browsable workspace root
@@ -250,7 +256,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		}
 		wireAgentAugment(m.pg, s.skillDir, s.hostTools)        // 可见 skills/MCP + 流量/编排 host 工具装配进 agent 工具集
 		agent.SetCweSkillIndex(BuildCweSkillIndex(s.skillDir)) // CWE→方法论 skill 联动（漏洞情报工具输出 related_skills）
-		domainReg := buildDomainReg(m.Assets())
+		var domainReg map[string]actool.CoreTool
+		s.domainTS, domainReg = buildDomainReg(m.Assets(), m.ProxyAddr(), m.ProxyCACert())
 		wireTools(m.pg, domainReg) // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
 		seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
 		s.seedOrchestrationTools() // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
@@ -310,6 +317,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// 主服务写不进去，只能由它自己换装——这里只负责发现版本不一致并通知。
 	s.StartHostdReconcile()
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
+	s.wireScopeGuard()        // N2 授权范围守卫：范围外域名一律 deny（优先于规则）
 	return s
 }
 
@@ -1066,6 +1074,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/intercept/pending", s.interceptListPending)
 	mux.HandleFunc("GET /api/intercept/pending/{id}", s.interceptGetOne)
 	mux.HandleFunc("POST /api/intercept/pending/{id}/decide", s.interceptDecide)
+	mux.HandleFunc("GET /api/intercept/stats", s.interceptStats)
 	mux.HandleFunc("GET /api/intercept/history", s.interceptHistory)
 	mux.HandleFunc("GET /api/intercept/history/{id}", s.interceptDetail)
 	mux.HandleFunc("GET /api/intercept/history/{id}/execution", s.interceptExecution)
@@ -4229,6 +4238,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		changed = true // capture-off egress is baked into agents at build time → rebuild
+	}
+	if req.GlobalProxy != nil || req.TrafficCapture != nil {
+		// ProxyAddr 随全局代理/捕获开关变化——server 级 domain 工具持有同一
+		// ToolSet 指针，同步其 egressProxy（否则 Auto/自定义 agent 的 domain
+		// 工具仍走旧出口，与 worker/planner 口径不一致）。
+		if s.domainTS != nil {
+			s.domainTS.SetEgressProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+		}
 	}
 	if req.HiddenServiceEnabled != nil || req.TorProxy != nil || req.I2PProxy != nil ||
 		req.HiddenServiceTimeout != nil || req.HiddenServiceRetries != nil ||

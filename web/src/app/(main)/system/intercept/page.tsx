@@ -51,6 +51,7 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { InterceptHitStatsCard } from "./intercept-hit-stats";
 import type {
   InterceptAction,
   InterceptRule,
@@ -674,6 +675,7 @@ export default function InterceptPage() {
 
         {/* ---- tab: 拦截规则 ---- */}
         <TabsContent value="rules" className="mt-4 flex flex-col gap-4">
+          <InterceptHitStatsCard />
           <div className="flex items-center justify-between gap-3">
             <p className="text-muted-foreground text-xs">
               按优先级（数字越大越先）逐条匹配，首条命中的规则生效

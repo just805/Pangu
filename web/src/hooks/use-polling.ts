@@ -11,7 +11,11 @@ import * as React from "react";
 // usePageVisible + usePollInterval 是统一出口：
 //   - 页面隐藏时暂停轮询（保留已有数据，恢复可见立即刷新一轮）；
 //   - cb 存 ref——调用方无需 useCallback 包裹，依赖变化不打断节奏；
-//   - deps 由调用方显式传入（通常 [taskId] 一类身份参数），变化时重建并立即执行。
+//   - deps 由调用方显式传入（通常 [taskId] 一类身份参数），变化时重建并立即执行；
+//   - 失败退避（backoff）：cb 返回 false 或抛错 = 本轮失败，下一轮间隔翻倍
+//     （上限 8×）；成功恢复基础间隔。现有返回 void 的调用方天然兼容（undefined
+//     视为成功）——不必改任何既有调用点就能享受退避。
+// 竞态防护（旧响应覆盖新响应）由调用方的请求序号/alive 模式负责，本 hook 不重复。
 
 // usePageVisible 报告页面是否可见（visibilitychange 订阅）。SSR/静态导出首帧按可见处理。
 export function usePageVisible(): boolean {
@@ -26,13 +30,15 @@ export function usePageVisible(): boolean {
 	return visible;
 }
 
+const MAX_BACKOFF_FACTOR = 8;
+
 // usePollInterval 在页面可见时按 ms 周期执行 cb：
 //   - 挂载与「恢复可见」时立即执行一轮（immediate: false 关闭）；
 //   - 页面隐藏时暂停，恢复可见立即补一轮；
+//   - 失败时下一轮间隔翻倍（上限 8×ms），成功恢复基础间隔；
 //   - 卸载与 deps 变化时清理重建。
-// 竞态防护（旧响应覆盖新响应）由调用方的请求序号/alive 模式负责，本 hook 不重复。
 export function usePollInterval(
-	cb: () => void,
+	cb: () => void | boolean | Promise<void | boolean>,
 	ms: number,
 	deps: React.DependencyList = [],
 	opts: { immediate?: boolean } = {},
@@ -45,9 +51,27 @@ export function usePollInterval(
 	const immediate = opts.immediate !== false;
 	React.useEffect(() => {
 		if (!visible) return;
-		if (immediate) cbRef.current();
-		const id = setInterval(() => cbRef.current(), ms);
-		return () => clearInterval(id);
+		let stopped = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let factor = 1; // 连续失败次数决定的退避倍数（1..8）
+		const run = async () => {
+			if (stopped) return;
+			try {
+				const ok = await cbRef.current();
+				factor = ok === false ? Math.min(factor * 2, MAX_BACKOFF_FACTOR) : 1;
+			} catch {
+				// 抛错同样视为失败——后端 5xx/网络断连时不要把请求打得更密。
+				factor = Math.min(factor * 2, MAX_BACKOFF_FACTOR);
+			}
+			if (stopped) return;
+			timer = setTimeout(run, ms * factor);
+		};
+		if (immediate) void run();
+		else timer = setTimeout(run, ms);
+		return () => {
+			stopped = true;
+			if (timer !== undefined) clearTimeout(timer);
+		};
 		// deps 由调用方显式控制（身份参数，如 taskId）；cb 经 ref 转发不参与依赖。
 	}, [visible, ms, immediate, ...deps]);
 }

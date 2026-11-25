@@ -477,17 +477,20 @@ func contains(ss []string, v string) bool {
 // (they only need the AssetStore); the exploration-graph tools refuse with a
 // clear message via ToolSet.needExploration. Binding one of them to a task-less
 // agent in the tools table is therefore a useless tool, not a crash.
-func buildDomainReg(as *db.AssetStore) map[string]actool.CoreTool {
+// buildDomainReg 同时返回创建的 ToolSet（赋给 s.domainTS 供热更新）。egress
+// 注入与 worker/planner 同源：捕获开时 ProxyAddr()=记录代理+CA；否则=全局代理。
+func buildDomainReg(as *db.AssetStore, proxyAddr, caCert string) (*agent.ToolSet, map[string]actool.CoreTool) {
 	if as == nil {
-		return nil
+		return nil, nil
 	}
 	serverTS := agent.NewToolSet(nil, "")
 	serverTS.SetAssetStore(as, as.Companies())
+	serverTS.SetEgressProxy(proxyAddr, caCert)
 	reg := make(map[string]actool.CoreTool)
 	for _, t := range serverTS.AllDomainTools() {
 		reg[t.Name()] = t
 	}
-	return reg
+	return serverTS, reg
 }
 
 func jsonStrSlice(raw json.RawMessage) []string {

@@ -1651,6 +1651,17 @@ export type InterceptAction = "allow" | "deny" | "ask" | "judge";
 export type InterceptMatchTarget = "tool_name" | "tool_input";
 export type InterceptMatchType = "string" | "regex";
 
+// N12 拦截命中统计（GET /api/intercept/stats）。
+export interface InterceptHitStat {
+  rule_id: number;
+  rule_name: string;
+  action: string;
+  status: string;
+  decision_source: string;
+  day: string;
+  count: number;
+}
+
 export interface InterceptRule {
   id: number;
   name: string;

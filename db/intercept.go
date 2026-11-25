@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -43,6 +44,45 @@ type InterceptPending struct {
 }
 
 const interceptRuleCols = `id, name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action, created_at, updated_at`
+
+// InterceptHitStat 是一条拦截命中聚合（N12 可观测）：规则维度、来源维度与按天趋势。
+type InterceptHitStat struct {
+	RuleID         int64  `json:"rule_id"`
+	RuleName       string `json:"rule_name"`
+	Action         string `json:"action"`
+	Status         string `json:"status"`
+	DecisionSource string `json:"decision_source"`
+	Day            string `json:"day"`
+	Count          int    `json:"count"`
+}
+
+// InterceptHitStats 聚合 intercept_pending（allow/deny/judge 的 Log 也写 decided
+// 行，ask 写 pending 行——所有命中都有记录）按规则/动作/来源/天统计。days 为
+// 回看窗口（1..365）。规则删除后 rule_id 置 NULL，用 name='(已删除)' 兜底。
+func (d *DB) InterceptHitStats(ctx context.Context, days int) ([]InterceptHitStat, error) {
+	if days < 1 || days > 365 {
+		days = 30
+	}
+	rows, err := d.QueryContext(ctx, `SELECT COALESCE(p.rule_id,0), COALESCE(r.name,'(已删除/模型判定)'),
+COALESCE(r.action,'') AS action, p.status, COALESCE(p.decision_source,'unknown'),
+to_char(p.created_at,'YYYY-MM-DD') AS day, count(*)
+FROM intercept_pending p LEFT JOIN intercept_rules r ON r.id=p.rule_id
+WHERE p.created_at > now() - ($1::int || ' days')::interval
+GROUP BY 1,2,3,4,5,6 ORDER BY count(*) DESC, day DESC`, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []InterceptHitStat{}
+	for rows.Next() {
+		var s InterceptHitStat
+		if err := rows.Scan(&s.RuleID, &s.RuleName, &s.Action, &s.Status, &s.DecisionSource, &s.Day, &s.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
 
 func scanInterceptRule(row interface{ Scan(...any) error }) (InterceptRule, error) {
 	var r InterceptRule

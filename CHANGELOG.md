@@ -2,6 +2,34 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.1.25] - 2026-11-25
+
+### 新增
+
+- **N3 `http_replay` 工具**：从已录制流量取一条请求改参重放（authz 测试的原子
+  操作——先原样重放看基线，再只换 session cookie / Authorization 重放看越权
+  回读）。复用 traffic_search 的 traffic_id、录制请求的真实头/正文，走平台出口
+  （捕获开时重放本身也留痕）；截断 blob 正文拒绝重放。经 `traffic.Tools()`
+  注入 host 工具集（worker 默认绑定），worker 流量提示段同步说明用法。
+- **N12 拦截命中统计**：`GET /api/intercept/stats?days=30` 按规则/动作/来源/天
+  聚合 `intercept_pending`（allow/deny 的 Log 与 ask 都落库）——此前规则配了之后
+  「到底命中没有」完全看不见。拦截规则页顶部新增命中统计卡（60s 轮询，失败
+  自动退避）。
+- **N2 scope-aware 拦截**：工具调用里出现的 URL 主机若不在任务授权范围
+  （`company_scope` 的 domain/ip/cidr，按任务 CompanyIDs 取）一律 deny，用户
+  规则里的 allow 也不放行——守卫优先于规则。任务没配 scope 时保守放行；设置
+  `scope_guard_enabled` 默认开、可关。通过 `MatchWithContext` 把任务上下文传给
+  守卫（guard 链路已切换）；未带 ctx 的旧 Match 调用保持原行为。
+
+### 修复
+
+- **server 级 domain 工具接上平台出口**：`buildDomainReg` 此前只注入 AssetStore，
+  没有像 worker/planner 那样 `SetEgressProxy`——Auto/自定义 agent 的 domain 工具
+  从平台真实 IP 直连目标，绕过出口链路。现在初始化时注入 `ProxyAddr()`，且
+  `SetGlobalProxy` / 捕获开关热更新时同步同一 ToolSet（工具闭包持有指针）。
+- **轮询退避**：`usePollInterval` 失败（cb 返回 false 或抛错）时下一轮间隔指数
+  退避（上限 8×），成功恢复；既有 void 回调天然兼容，无需改调用点。
+
 ## [0.1.24] - 2026-11-25
 
 ### 新增（planner 态势卡片化 · 批 2）

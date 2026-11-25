@@ -379,6 +379,27 @@ func (s *Server) interceptListTaskItems(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": size})
 }
 
+// interceptStats 返回拦截命中统计（N12）：按规则/动作/来源/天聚合
+// intercept_pending（allow/deny 的 Log 与 ask 的 HandleAsk 都落库）。
+// 此前只有通用的 /api/stats*，规则配了之后「到底命中没有」看不见。
+func (s *Server) interceptStats(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		writeErr(w, 503, errDataSourceUnavailable)
+		return
+	}
+	days := atoiDefault(r.URL.Query().Get("days"), 30)
+	if days < 1 {
+		days = 30
+	}
+	stats, err := pg.InterceptHitStats(r.Context(), days)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"days": days, "items": stats})
+}
+
 func (s *Server) interceptHistory(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
 	if pg == nil {

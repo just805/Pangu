@@ -81,6 +81,12 @@ func WithTaskContext(ctx context.Context, taskID, agentName string, emit func(db
 	return ctx
 }
 
+// TaskIDFromContext 供 server 侧 scope-aware 守卫读取当前工具调用所属任务。
+func TaskIDFromContext(ctx context.Context) string {
+	id, _ := taskInfoFromCtx(ctx)
+	return id
+}
+
 func taskInfoFromCtx(ctx context.Context) (taskID, agentName string) {
 	if v, ok := ctx.Value(taskInfoCtxKey).(taskCtxInfo); ok {
 		return v.taskID, v.agentName
@@ -146,6 +152,7 @@ type Interceptor struct {
 	enabledTools map[string]bool // nil means not loaded yet
 	pending      *pendingManager
 	reviewer     Reviewer // nil = LLM fallback judge not wired
+	scopeChecker ScopeChecker // nil = 无授权范围守卫（旧行为）
 }
 
 // SetReviewer installs the LLM fallback judge callback. Passing nil disables it.
@@ -691,7 +698,31 @@ func judgeActionLabel(action string) string {
 // Match evaluates the rule list (priority DESC) against a tool call.
 // Returns (Decision, true) for the first matching enabled rule, or
 // (Decision{}, false) if no rule matches.
+// ScopeChecker 是授权范围守卫（N2）：返回 (deny, reason)。它优先于所有用户
+// 规则——范围外目标一律拒绝，规则里的 allow 不能放行。nil = 不启用（旧行为）。
+// 注入回调而非依赖 db，保持 intercept 包无存储依赖。
+type ScopeChecker func(ctx context.Context, toolName string, input []byte) (bool, string)
+
+// SetScopeChecker 安装/移除范围守卫（热更新）。
+func (i *Interceptor) SetScopeChecker(fn ScopeChecker) { i.scopeChecker = fn }
+
+// Match 保持旧签名（无 ctx）——ScopeChecker 在这种调用下拿不到 task 上下文，
+// 守卫失效（旧行为）。真实 agent 链路走 MatchWithContext（guard 调用）。
 func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
+	return i.MatchWithContext(context.Background(), toolName, input)
+}
+
+// MatchWithContext 与 Match 相同，但把 ctx 交给 ScopeChecker——task 上下文
+// （taskID/agent）从 guard 的 hook ctx 一路传进来。
+func (i *Interceptor) MatchWithContext(ctx context.Context, toolName string, input []byte) (Decision, bool) {
+	if i.scopeChecker != nil {
+		if deny, reason := i.scopeChecker(ctx, toolName, input); deny {
+			return Decision{
+				RuleName: "授权范围守卫", Action: "deny",
+				Message: "目标不在授权范围内（scope-aware 拦截）: " + reason,
+			}, true
+		}
+	}
 	rules, err := i.rules()
 	if err != nil || len(rules) == 0 {
 		return Decision{}, false
