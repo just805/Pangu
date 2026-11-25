@@ -17,6 +17,7 @@ import {
   PlusIcon,
   RadioIcon,
   RotateCwIcon,
+  SearchIcon,
   ShieldAlertIcon,
   SquareIcon,
   Trash2Icon,
@@ -395,6 +396,7 @@ function SessionItem({
   displayTitle,
   hasPending,
   unread,
+  tokens,
   onClick,
   onCancel,
   controlling,
@@ -405,6 +407,7 @@ function SessionItem({
   displayTitle: string;
   hasPending?: boolean;
   unread?: number;
+  tokens?: TokenTotal;
   onClick: () => void;
   onCancel?: () => void;
   controlling?: boolean;
@@ -458,6 +461,15 @@ function SessionItem({
           </Badge>
         )}
         {hasPending && <ShieldAlertIcon className="size-3.5 shrink-0 text-amber-500" />}
+        {/* 会话级 token 总量：一眼看出哪个 Agent 烧钱（i+o+cache 读，压缩格式）。 */}
+        {tokens && tokens.input_tokens + tokens.output_tokens + tokens.cache_read_tokens > 0 && (
+          <span
+            title={`输入 ${tokens.input_tokens.toLocaleString()} · 输出 ${tokens.output_tokens.toLocaleString()} · 缓存读 ${tokens.cache_read_tokens.toLocaleString()}`}
+            className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums"
+          >
+            {fmtTokens(tokens.input_tokens + tokens.output_tokens + tokens.cache_read_tokens)}
+          </span>
+        )}
         {!active && unread ? (
           <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-blue-500/15 px-1 font-medium text-[10px] text-blue-600 tabular-nums dark:text-blue-400">
             {unread > 99 ? "99+" : unread}
@@ -575,6 +587,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   // 继承来的 worker 会话分组默认**收起**——它们来自别的任务，混在自家列表里
   // 会让人分不清哪个 Agent 在哪边跑。要看历史时再展开。
   const [expandedInherited, setExpandedInherited] = React.useState<Record<number, boolean>>({});
+  // 会话列表过滤：长任务几十个 worker 时靠滚动找人肉找会话不可用——按标题/编号
+  // 搜索 + 按状态过滤。只作用于列表呈现，不影响 store 数据。
+  const [sessionQuery, setSessionQuery] = React.useState("");
+  const [statusFilter, setStatusFilter] = React.useState<"all" | SessionStatus>("all");
   // Per-session lazily-loaded caches, keyed by session_key (main | plan | intent:<id>).
   const [store, setStore] = React.useState<SessionStore>({});
   // Worker sessions derived from exploration intents (paged past the old 300 cap).
@@ -739,17 +755,15 @@ export function SessionsTab({ taskId }: { taskId: string }) {
 
       if (key === taskScopedKey(taskId, "system")) {
         void (async () => {
+          // 服务端过滤（worker=system，含 llm_switch/llm_failover）：此前是前端
+          // 扫 500 条/页捞稀疏行——长任务要翻十几页。现在一页即可拿全，循环保留
+          // 只作超长任务的兜底。
           let since = 0;
           let systemItems: Activity[] = [];
           for (;;) {
-            const page = await api.activity(taskId, { since, limit: SYSTEM_SCAN_PAGE });
+            const page = await api.activity(taskId, { since, limit: SYSTEM_SCAN_PAGE, worker: "system" });
             if (reqTokenRef.current[key] !== token) return;
-            systemItems = mergeBySeq(
-              systemItems,
-              page.items.filter(
-                (item) => item.worker === "system" || item.kind === "llm_switch" || item.kind === "llm_failover",
-              ),
-            );
+            systemItems = mergeBySeq(systemItems, page.items);
             if (page.items.length < SYSTEM_SCAN_PAGE || page.cursor <= since) break;
             since = page.cursor;
           }
@@ -1358,13 +1372,25 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     return items;
   }, [mainSessions, workerSessions, plannerLive, focusSession, retainedSession]);
 
+  // 会话过滤谓词：状态 + 标题/编号搜索（大小写不敏感）。空条件恒过。
+  const matchesSessionFilter = React.useCallback(
+    (s: Session) => {
+      if (statusFilter !== "all" && s.status !== statusFilter) return false;
+      const q = sessionQuery.trim().toLowerCase();
+      if (!q) return true;
+      const title = (sessionMeta.get(s.id)?.title ?? s.title).toLowerCase();
+      return title.includes(q) || String(s.intent_id ?? "").includes(q);
+    },
+    [statusFilter, sessionQuery, sessionMeta],
+  );
+
   const grouped = {
-    mainagent: sessions.filter((s) => s.role === "mainagent"),
-    planner: sessions.filter((s) => s.role === "planner"),
+    mainagent: sessions.filter((s) => s.role === "mainagent" && matchesSessionFilter(s)),
+    planner: sessions.filter((s) => s.role === "planner" && matchesSessionFilter(s)),
     // worker 只放**本任务自己的**会话；继承来的单独按来源任务折叠展示
     // （见 inheritedWorkerGroups）。
-    worker: ownWorkerSessions,
-    system: sessions.filter((s) => s.role === "system"),
+    worker: ownWorkerSessions.filter(matchesSessionFilter),
+    system: sessions.filter((s) => s.role === "system" && matchesSessionFilter(s)),
   };
 
   const active = sessions.find((s) => s.id === activeId) ?? MAIN_SESSION;
@@ -1771,6 +1797,34 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                 </TooltipContent>
               </Tooltip>
             )}
+            {/* 会话过滤条：搜索（标题/编号）+ 状态过滤。worker 会话几十个时是刚需。 */}
+            <div className="mt-2 flex items-center gap-1.5">
+              <div className="relative min-w-0 flex-1">
+                <SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-3 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  value={sessionQuery}
+                  onChange={(e) => setSessionQuery(e.target.value)}
+                  placeholder="搜索会话（标题 / #编号）"
+                  className="h-7 w-full rounded-md border bg-background pr-2 pl-6 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring"
+                  aria-label="搜索会话"
+                />
+              </div>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as "all" | SessionStatus)}
+                aria-label="按状态过滤会话"
+                className="h-7 shrink-0 rounded-md border bg-background px-1 text-xs outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="all">全部状态</option>
+                <option value="running">运行中</option>
+                <option value="pending">待领</option>
+                <option value="paused">已暂停</option>
+                <option value="done">已完成</option>
+                <option value="blocked">受阻</option>
+                <option value="exhausted">已耗尽</option>
+                <option value="stopped">已停止</option>
+              </select>
+            </div>
           </div>
           <ScrollArea
             id="session-list-panel"
@@ -1818,6 +1872,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                           displayTitle={meta?.title ?? s.title}
                           hasPending={hasPendingForSession(s)}
                           unread={store[keyForSession(s, taskId)]?.unread}
+                          tokens={tokenForSession(keyForSession(s, taskId))}
                           onClick={() => {
                             approvalFocus.close();
                             setActiveId(s.id);
@@ -1885,6 +1940,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                                     displayTitle={meta?.title ?? s.title}
                                     hasPending={hasPendingForSession(s)}
                                     unread={store[keyForSession(s, taskId)]?.unread}
+                                    tokens={tokenForSession(keyForSession(s, taskId))}
                                     onClick={() => {
                                       approvalFocus.close();
                                       setActiveId(s.id);

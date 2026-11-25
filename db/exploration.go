@@ -1755,19 +1755,36 @@ func (s *ExplorationStore) TokenStatsBySession() ([]SessionTokenUsage, error) {
 // ActivityList returns steps after sinceID (exclusive), optionally filtered by node.
 // Returns items and the new cursor (max id seen).
 func (s *ExplorationStore) ActivityList(nodeID *int64, sinceID int64, limit int) ([]Activity, int64, error) {
+	return s.ActivityListFiltered(nodeID, sinceID, limit, "")
+}
+
+// ActivityListFiltered 是 ActivityList 的按角色过滤版。workerFilter 非空时只返回
+// 该 worker 的行；特殊值 "system" 额外包含 llm_switch/llm_failover 审计事件——
+// 它们挂在无 worker 行上（LLM 故障转移是平台级事件，不属于任何会话）。
+// 此前系统事件会话靠前端扫 500 条/页捞稀疏行，服务端过滤后一页即可拿全。
+func (s *ExplorationStore) ActivityListFiltered(nodeID *int64, sinceID int64, limit int, workerFilter string) ([]Activity, int64, error) {
 	if limit <= 0 {
 		limit = 300
 	}
-	var rows *sql.Rows
-	var err error
 	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg`
+	cond := "exploration_id=$1 AND id>$2"
+	args := []any{s.expID, sinceID}
 	if nodeID != nil {
-		rows, err = s.db.Query(`SELECT `+cols+`
-FROM activity WHERE exploration_id=$1 AND node_id=$2 AND id>$3 ORDER BY id LIMIT $4`, s.expID, *nodeID, sinceID, limit)
-	} else {
-		rows, err = s.db.Query(`SELECT `+cols+`
-FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id LIMIT $3`, s.expID, sinceID, limit)
+		args = append(args, *nodeID)
+		cond += fmt.Sprintf(" AND node_id=$%d", len(args))
 	}
+	switch workerFilter {
+	case "":
+	case "system":
+		args = append(args, "system")
+		cond += fmt.Sprintf(" AND (worker=$%d OR kind IN ('llm_switch','llm_failover'))", len(args))
+	default:
+		args = append(args, workerFilter)
+		cond += fmt.Sprintf(" AND worker=$%d", len(args))
+	}
+	args = append(args, limit)
+	query := fmt.Sprintf("SELECT %s FROM activity WHERE %s ORDER BY id LIMIT $%d", cols, cond, len(args))
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, sinceID, err
 	}

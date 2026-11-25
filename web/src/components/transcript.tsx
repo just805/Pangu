@@ -476,12 +476,142 @@ function ToolBlock({
         <span className={`ml-auto shrink-0 font-medium ${statusTone}`}>{statusText}</span>
       </button>
       {open && (
-        <pre className="mb-1 ml-7 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px] leading-relaxed">
-          {detail ?? "加载中…"}
-        </pre>
+        <div className="mb-1 ml-7">
+          <ToolOutput text={detail ?? "加载中…"} loading={detail === null} />
+        </div>
       )}
     </section>
   );
+}
+
+// ToolOutput 是工具展开区的输出查看器：JSON 自动着色、行内搜索过滤、
+// 大输出默认限高。此前是裸 <pre> 滚动——几千行输出里找一个字段全靠肉眼。
+function ToolOutput({ text, loading }: { text: string; loading?: boolean }) {
+  const [query, setQuery] = React.useState("");
+  const [expanded, setExpanded] = React.useState(false);
+  const q = query.trim().toLowerCase();
+  const lines = React.useMemo(() => text.split("\n"), [text]);
+  // JSON 检测：首非空字符是 { 或 [ 且整体可解析——着色才有意义；失败退化为
+  // 纯文本（大量工具输出是日志/报文，不是 JSON）。
+  const isJSON = React.useMemo(() => {
+    const head = text.trimStart()[0];
+    if (head !== "{" && head !== "[") return false;
+    try {
+      JSON.parse(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [text]);
+  const filtered = React.useMemo(
+    () => (q ? lines.filter((l) => l.toLowerCase().includes(q)) : lines),
+    [lines, q],
+  );
+  // 折叠口径：>200 行默认只看前 80 行（非过滤态）；过滤结果通常少，不折叠。
+  const cap = 80;
+  const capped = !q && !expanded && filtered.length > cap;
+  const shown = capped ? filtered.slice(0, cap) : filtered;
+  return (
+    <div className="rounded bg-muted/50">
+      <div className="flex items-center gap-1.5 border-b px-2 py-1">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="在输出中搜索（按行过滤）"
+          className="h-6 min-w-0 flex-1 rounded border bg-background px-2 text-[11px] outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring"
+          aria-label="在工具输出中搜索"
+        />
+        <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
+          {q ? `${filtered.length}/${lines.length} 行` : `${lines.length} 行`}
+        </span>
+      </div>
+      <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all p-2 font-mono text-[11px] leading-relaxed">
+        {loading
+          ? "加载中…"
+          : isJSON && !q
+            ? shown.map((line, i) => (
+                <div key={i}>{highlightJSONLine(line)}</div>
+              ))
+            : shown.map((line, i) => (
+                <div key={i}>{q ? highlightMatch(line, q) : line}</div>
+              ))}
+        {capped && (
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="mt-1 text-muted-foreground underline hover:text-foreground"
+          >
+            显示全部 {filtered.length} 行
+          </button>
+        )}
+        {!loading && filtered.length === 0 && <span className="text-muted-foreground">无匹配行</span>}
+      </pre>
+    </div>
+  );
+}
+
+// highlightJSONLine 给一行 JSON 着色：key/字符串/数字/字面量分色。正则分片，
+// 不引语法高亮库（输出区是辅助视图，不值得多 200KB 依赖）。
+function highlightJSONLine(line: string): React.ReactNode {
+  const re = /("(?:\\.|[^"\\])*")(\s*:)?|(\b(?:true|false|null)\b)|(-?\d+(?:\.\d+)?)/g;
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let key = 0;
+  while ((m = re.exec(line)) !== null) {
+    if (m.index > last) out.push(line.slice(last, m.index));
+    if (m[1] !== undefined) {
+      out.push(
+        m[2] ? (
+          <span key={key++} className="text-sky-600 dark:text-sky-400">
+            {m[1]}
+            {m[2]}
+          </span>
+        ) : (
+          <span key={key++} className="text-emerald-700 dark:text-emerald-400">
+            {m[1]}
+          </span>
+        ),
+      );
+    } else if (m[3] !== undefined) {
+      out.push(
+        <span key={key++} className="text-violet-600 dark:text-violet-400">
+          {m[3]}
+        </span>,
+      );
+    } else if (m[4] !== undefined) {
+      out.push(
+        <span key={key++} className="text-amber-700 dark:text-amber-400">
+          {m[4]}
+        </span>,
+      );
+    }
+    last = re.lastIndex;
+  }
+  if (last < line.length) out.push(line.slice(last));
+  return out;
+}
+
+// highlightMatch 高亮搜索命中（非 JSON 输出的过滤态）。
+function highlightMatch(line: string, q: string): React.ReactNode {
+  const lower = line.toLowerCase();
+  const ql = q.toLowerCase();
+  const out: React.ReactNode[] = [];
+  let from = 0;
+  let key = 0;
+  for (;;) {
+    const at = lower.indexOf(ql, from);
+    if (at < 0) break;
+    if (at > from) out.push(line.slice(from, at));
+    out.push(
+      <mark key={key++} className="rounded bg-amber-300/60 px-0.5 text-inherit dark:bg-amber-500/30">
+        {line.slice(at, at + q.length)}
+      </mark>,
+    );
+    from = at + q.length;
+  }
+  if (from < line.length) out.push(line.slice(from));
+  return out.length ? out : line;
 }
 
 // MessageBlock renders a coalesced agent message (merged streaming text/thinking/

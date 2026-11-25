@@ -3033,6 +3033,9 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 	}
 	since := int64(atoiDefault(r.URL.Query().Get("since"), 0))
 	limit := atoiDefault(r.URL.Query().Get("limit"), 300)
+	// worker 过滤（服务端过滤）：系统事件会话（worker=system，含 llm_switch/
+	// llm_failover）此前靠前端扫 500 条/页捞稀疏行——服务端过滤后一页拿全。
+	workerFilter := strings.TrimSpace(r.URL.Query().Get("worker"))
 	var intentPtr *int64
 	if iv := r.URL.Query().Get("intent"); iv != "" {
 		if n, err := strconv.ParseInt(iv, 10, 64); err == nil {
@@ -3047,7 +3050,7 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 	if intentPtr != nil {
 		items, cursor, err = t.Store.ActivityListWithSources(*intentPtr, since, limit)
 	} else {
-		items, cursor, err = t.Store.ActivityList(nil, since, limit)
+		items, cursor, err = t.Store.ActivityListFiltered(nil, since, limit, workerFilter)
 	}
 	if err != nil {
 		log.Printf("[activity] task=%s since=%d limit=%d intent=%v: %v", t.ID, since, limit, intentPtr, err)

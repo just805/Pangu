@@ -947,12 +947,13 @@ export const api = {
       assets: r.assets ?? {},
     }));
   },
-  activity: (task?: string, opts?: { intent?: string; since?: number; limit?: number }) => {
+  activity: (task?: string, opts?: { intent?: string; since?: number; limit?: number; worker?: string }) => {
     const q = new URLSearchParams();
     if (task) q.set("task", task);
     if (opts?.intent) q.set("intent", opts.intent);
     if (opts?.since) q.set("since", String(opts.since));
     if (opts?.limit) q.set("limit", String(opts.limit));
+    if (opts?.worker) q.set("worker", opts.worker);
     return get<{ items: Activity[]; cursor: number }>(`/exploration/activity?${q.toString()}`).then((r) => ({
       items: arr(r.items),
       cursor: r.cursor ?? 0,

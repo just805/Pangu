@@ -12,6 +12,7 @@ SHA256SUMS
 # 前端开发产物
 /web/node_modules/
 /web/.next/
+/web/.next-old/
 /web/src/.next/
 /web/out/
 /web/.turbo/
