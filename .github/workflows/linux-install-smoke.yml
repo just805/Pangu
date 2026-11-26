@@ -40,14 +40,24 @@ jobs:
       # 静态检查：脚本是 set -euo pipefail，`x="$(... | grep ...)"` 在「找不到」这种
       # 正常分支上会让整条管道判失败 → set -e 静默退出（v0.1.30 修的就是这个）。
       # 可选查找一律走 env_get，或显式补 `|| true`。
-      - name: Lint (grep 赋值在 pipefail 下会静默退出)
+      - name: Lint (pipefail 静默退出 / tr 反序区间 / ERR trap)
         run: |
+          set -eu
+          # ① `x="$(... | grep ...)"` 在「找不到」这种正常分支上会让整条管道判失败
           bad=$(grep -nE '="\$\([^)]*grep' install.sh | grep -v '|| *true' | grep -vE '^[0-9]+:[[:space:]]*#' || true)
-          if [ -n "$bad" ]; then
-            echo "以下赋值在「找不到」时会静默掐断安装，改用 env_get 或补 || true："
-            echo "$bad"
-            exit 1
-          fi
+          [ -z "$bad" ] || { echo "以下赋值在找不到时会静默掐断安装："; echo "$bad"; exit 1; }
+          # ② v0.1.30 事故：tr 把 `_-` 与 `\n` 读成反序区间直接报错退出。
+          #    直接跑源码里的项目名归一语句，写法回退会在这里复现。
+          { echo 'set -euo pipefail'
+            echo 'INSTALL_DIR=/opt/pangu'
+            grep -A1 -E '^  project="\$\(basename' install.sh | sed 's/^  //'
+            echo 'echo "RESULT=$project"'
+          } > /tmp/proj.sh
+          got=$(bash /tmp/proj.sh 2>&1) || { echo "项目名归一执行失败：$got"; exit 1; }
+          [ "$got" = "RESULT=pangu" ] || { echo "项目名归一结果异常：$got"; exit 1; }
+          # ③ 中断必须可定位
+          grep -q '^set -E$' install.sh || { echo "缺 set -E"; exit 1; }
+          grep -q "^trap 'on_err" install.sh || { echo "缺 ERR trap"; exit 1; }
           echo "lint OK"
 
       - name: Resolve smoke version

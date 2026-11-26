@@ -57,6 +57,23 @@ ok(){   printf '\033[32m[+]\033[0m %s\n' "$*"; }
 warn(){ printf '\033[33m[!]\033[0m %s\n' "$*"; }
 die(){  printf '\033[31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# 任何「静默中断」都必须能看见行号与失败语句。set -e 的默认行为是什么都不打印：
+# v0.1.29（grep 找不到键）与 v0.1.30（tr 区间反序）两次事故都是「装到一半回到
+# 提示符」，用户完全不知道卡在哪。set -E 让 ERR trap 进入函数与命令替换；
+# BASH_SUBSHELL 过滤保证 $( ) 里已被 || 正常处理的失败不会刷屏。
+set -E
+on_err(){
+  [ "${BASH_SUBSHELL:-0}" -eq 0 ] || return 0
+  local rc="$1" line="$2" cmd="$3"
+  printf '\n\033[31m[x]\033[0m 安装中断：第 %s 行，退出码 %s\n' "$line" "$rc" >&2
+  printf '    失败语句：%s\n' "$cmd" >&2
+  printf '    根分区可用 %sM；Docker %s\n' \
+    "$(df -Pm / 2>/dev/null | awk 'NR==2{print $4}' || echo '?')" \
+    "$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '不可用')" >&2
+  printf '    请把这一段连同上面的日志一起反馈；想跳过宿主机调优重试：sudo bash install.sh --no-tune\n' >&2
+}
+trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
 usage(){
   cat <<EOF
 PANGU 安装脚本
@@ -573,7 +590,13 @@ PYEOF
   # 所以：只有本项目的容器在跑（或没有容器在跑）时才自动重启；机器上还有别的容器
   # 时只提示，由运维择机重启。
   local project foreign
-  project="$(basename "$INSTALL_DIR" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_-\n')"
+  # 项目名 = 安装目录名，按 compose 的口径归一成小写 [a-z0-9_-]。
+  # 这里不能用 `| tr -cd 'a-z0-9_-\n'`：tr 会把 `_-` 与 `\n` 读成「_ 到换行」的
+  # 反序区间，直接报 "range-endpoints ... reverse collating sequence order" 退出，
+  # 再被 pipefail + set -e 变成整个安装静默中断（v0.1.30 事故）。bash 参数展开
+  # 不依赖外部命令，也不会因输入内容失败。
+  project="$(basename "$INSTALL_DIR" | tr '[:upper:]' '[:lower:]')"
+  project="${project//[!a-z0-9_-]/}"
   foreign="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -v "^${project}-" || true)"
   if [ -n "$foreign" ]; then
     warn "已写 $f，但机器上还有其它容器在运行，未自动重启 docker——日志上限要在重启后生效（择机：systemctl restart docker）"
@@ -946,7 +969,7 @@ if [ "$IS_MAC" != "1" ]; then
     warn "内核日志里有 ${_oom} 条 OOM 记录：这台机器已经发生过内存耗尽（dmesg -T | grep -i oom 看是哪个进程）"
   fi
 fi
-disk_avail="$(df -Pk / 2>/dev/null | awk 'NR==2{print $4}')"
+disk_avail="$(df -Pk / 2>/dev/null | awk 'NR==2{print $4}' || true)"
 if [ -n "${disk_avail:-}" ] && [ "$disk_avail" -lt 10485760 ]; then
   warn "根分区可用 < 10G：装工具/SecLists(约2.5G)/nuclei 模板/chromium 可能不够（建议 ≥40G）"
 fi
@@ -2364,7 +2387,7 @@ OJ/gobuster|gobuster_Linux_{lin}.tar.gz|gobuster
     else
       # 归档里可能带一层目录，用 find 兜底
       local found
-      found="$(find "$tmpd" -type f -name "$bin" 2>/dev/null | head -1)"
+      found="$(find "$tmpd" -type f -name "$bin" 2>/dev/null | head -1 || true)"
       [ -n "$found" ] && extracted="$found"
     fi
     if [ -n "$extracted" ] && [ -s "$extracted" ]; then
