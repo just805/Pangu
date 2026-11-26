@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.1.28] - 2026-11-26
+
 ### 新增（结论可信度：否定结论三态收口 + 派单确定性校验）
 
 - **`record_fact` 三态收口（M-04）**：事实新增 `verdict`（confirmed｜ruled_out｜
