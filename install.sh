@@ -38,6 +38,14 @@ ASSUME_YES=0
 # 是否安装特权助手 pangu-hostd(提供「系统 → 宿主环境」页的一键安装)。
 # 默认装;不想让 Web 端具备装包能力时用 --no-installer 关掉。
 WITH_INSTALLER=1
+# 宿主机调优 / 自动备份：默认开启；--no-tune / --no-backup 关闭，--tune / --backup 重开。
+# 关闭状态写进 install.env（见下方状态沿用段），重跑升级时不会悄悄把人关掉的东西打开。
+# TUNE_FORCE/BACKUP_FORCE：CLI 显式重开优先于状态文件里的关闭状态。
+# NO_LIMITS 只对 Docker 形态有意义（容器的 mem_limit/pids_limit）。
+DOCTOR=0
+NO_TUNE=0; TUNE_FORCE=0
+NO_BACKUP=0; BACKUP_FORCE=0
+NO_LIMITS=0
 
 # 管道执行（curl ... | sudo bash）时 stdin 是脚本本身，不能用来读输入。
 # 只要 /dev/tty 可读，就仍可交互提问（宝塔式一键安装的关键）。
@@ -75,6 +83,14 @@ PANGU 安装脚本
   -y, --yes              非交互，全部用默认值
   -h, --help             显示帮助
 
+宿主机调优与备份（仅 Linux；默认开启，关闭状态会记住，重跑仍生效）:
+  --no-tune              不做宿主机调优（默认自动：无 swap 时创建、内核网络/句柄参数只升不降、
+                         journald 与 Docker 容器日志 20MB×3 上限）；--tune 重新开启
+  --no-backup            不装自动备份（默认装 systemd 定时器：每日 03:30 数据库全量，保留 14 天；
+                         每周日另归档 data 目录，保留 2 份；升级前先自动做一次库备份）；--backup 重新开启
+  --doctor               只体检不安装：对既有部署做只读检查（数据是否挂载到宿主机、日志上限、
+                         内存/swap、备份、公网暴露面），不改任何东西，装完随时可重跑
+
 二进制形态专用:
   --user=NAME            运行用户（默认 pangu）
   --pg-super=NAME        PostgreSQL 超级用户（默认 postgres）
@@ -82,11 +98,14 @@ PANGU 安装脚本
 
 Docker 形态专用:
   --image=REF            镜像名（默认 $IMAGE）
+  --no-limits            不给容器设内存/进程数上限（默认按主机内存自动给系统与数据库留余量，
+                         防止单个扫描任务把整机拖死；.env 里写 PANGU_LIMITS=0 同效）
 
 示例:
   sudo ./install.sh --mode=binary --with-tools
-  sudo ./install.sh --mode=docker --version=v0.3.20
+  sudo ./install.sh --mode=docker --version=v0.1.28
   sudo ./install.sh --mode=binary --install-proxy=http://10.0.0.14:7897 --with-tools
+  sudo ./install.sh --doctor          # 装完之后的体检，可随时重跑
 EOF
 }
 
@@ -107,6 +126,12 @@ for arg in "$@"; do
     --pg-super=*)      PG_SUPER="${arg#--pg-super=}" ;;
     --image=*)         IMAGE="${arg#--image=}" ;;
     --no-installer)    WITH_INSTALLER=0 ;;
+    --doctor)          DOCTOR=1 ;;
+    --no-tune)         NO_TUNE=1 ;;
+    --tune)            NO_TUNE=0; TUNE_FORCE=1 ;;
+    --no-backup)       NO_BACKUP=1 ;;
+    --backup)          NO_BACKUP=0; BACKUP_FORCE=1 ;;
+    --no-limits)       NO_LIMITS=1 ;;
     -y|--yes)          ASSUME_YES=1 ;;
     -h|--help)         usage; exit 0 ;;
     *) die "未知参数: $arg（用 --help 查看帮助）" ;;
@@ -129,6 +154,9 @@ if [ -f "$INSTALL_STATE" ]; then
   . "$INSTALL_STATE"
   [ -n "$DOMAIN" ] && info "沿用既有域名部署形态: $DOMAIN（--domain= 显式覆盖/清除）"
 fi
+# 调优/备份的开关沿用上次的状态；CLI 显式给出时以 CLI 为准。
+if [ "${HOST_TUNE:-1}" = "0" ] && [ "$TUNE_FORCE" != "1" ]; then NO_TUNE=1; fi
+if [ "${HOST_BACKUP:-1}" = "0" ] && [ "$BACKUP_FORCE" != "1" ]; then NO_BACKUP=1; fi
 # CLI 参数合并（source 会覆盖同名变量，故 CLI 值最后落）：
 # --domain= 传空串 = 清除域名形态回 IP 直连；--trusted-proxy= 显式指定反代 IP。
 if [ -n "${CLI_DOMAIN+x}" ]; then
@@ -212,14 +240,705 @@ if [ "$IS_MAC" != "1" ] && \
   ok "CA 证书包就绪"
 fi
 
+# ════════════════════════════════════════════════════
+# 宿主机体检 / 调优 / 备份
+# ════════════════════════════════════════════════════
+# 设计口径（改这一段之前先读）：
+#   - 体检项只读，永不改系统；
+#   - 调优项「只升不降 + 幂等 + 失败不阻断安装」：用户手工调大过的参数不动，
+#     容器 / 只读内核里应用不了的参数跳过并如实说；
+#   - 不自动改防火墙、SSH 配置——自动改可能把人锁在机器外面，这两类只报告；
+#   - macOS 不做任何宿主调优（没有 systemd，且多为个人机）。
+# 每一项「为什么要调」的依据是平台的负载特征（数字来自代码默认值与镜像实测，
+# 见 docs/部署手册.md「服务器规格」）：每任务 3 个 worker；nuclei/httpx/ffuf
+# 瞬时打开成百上千连接；Chromium 300–500MB、LibreOffice 200–400MB 的内存峰值。
+
+# mem_mb_now / swap_mb_now：物理内存 / swap 总量（MB），读不到按 0。
+mem_mb_now(){ awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0; }
+swap_mb_now(){ awk '/SwapTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0; }
+
+# fs_avail_mb：某路径所在文件系统的可用空间（MB）。路径还不存在时逐级上溯到存在的
+# 父目录（安装目录创建之前就要问「这块盘够不够」）。
+fs_avail_mb(){
+  local p="$1"
+  while [ -n "$p" ] && [ ! -d "$p" ]; do p="$(dirname "$p")"; done
+  df -Pm "$p" 2>/dev/null | awk 'NR==2{print $4}'
+}
+
+# same_path A B：两个路径是否指向同一位置（解析不了时按「不同」处理，不猜）。
+same_path(){
+  local a b
+  a="$(readlink -f "$1" 2>/dev/null || true)"
+  b="$(readlink -f "$2" 2>/dev/null || true)"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" = "$b" ]
+}
+
+# env_set FILE KEY VALUE：往 .env 写键值。.env 是 KEY=VALUE 的 shell 格式，已有该键
+# 就整行替换，没有就追加——同名键出现两次时取哪个是不确定的。
+env_set(){
+  if grep -q "^$2=" "$1"; then
+    sed -i "s|^$2=.*|$2=$3|" "$1"
+  else
+    printf '%s=%s\n' "$2" "$3" >> "$1"
+  fi
+}
+
+# host_timezone：宿主机时区名（如 Asia/Shanghai），识别不出返回空（compose 退回 UTC）。
+host_timezone(){
+  local tz=""
+  if command -v timedatectl >/dev/null 2>&1; then
+    tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+  fi
+  if [ -z "$tz" ] && [ -L /etc/localtime ]; then
+    tz="$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||' || true)"
+  fi
+  # 时区名进的是 .env 与容器环境变量：只放行区名用到的字符
+  case "$tz" in ''|*[!A-Za-z0-9_+-/]*) return 0 ;; esac
+  printf '%s' "$tz"
+}
+
+# as_pg CMD...：以数据库超级用户身份执行。本机 PostgreSQL 的 peer 认证只认 OS 用户，
+# root 不能直接 -U postgres 连。有 sudo 走 sudo（与 deploy_binary 一致），没有就 su。
+as_pg(){
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -u "$PG_SUPER" "$@"
+  else
+    su -s /bin/sh "$PG_SUPER" -c "$(printf '%q ' "$@")"
+  fi
+}
+
+# dump_ok FILE：备份文件确实是 PostgreSQL 全量转储（而不是失败留下的空壳）。
+# 用 `gzip -dc`（不是 zcat）+ 把 grep 的退出码吞掉：grep 一命中就退出，上游收到
+# SIGPIPE，在 pipefail 下整条管道会被判失败——文件明明是好的。
+dump_ok(){
+  [ -s "$1" ] && gzip -t "$1" 2>/dev/null \
+    && [ "$(gzip -dc "$1" 2>/dev/null | grep -c 'PostgreSQL database cluster dump' || true)" -gt 0 ]
+}
+
+# ── swap ────────────────────────────────────────────
+# 没有 swap 时，内存峰值一旦超出物理内存，进程被 OOM killer 直接杀掉（LibreOffice
+# 转 PDF、Chromium 网页测试都是短时冲高的典型）；有 swap 则只是慢一点。所以这是
+# 「必须开」的一项（部署手册「选购坑位」第 2 条）。
+# 规则：只有完全没有 swap 时才建；已经有的（包括用户自己调过大小的）一律不动。
+ensure_swap(){
+  if [ "$(swap_mb_now)" -gt 0 ]; then return 0; fi
+  local ram; ram="$(mem_mb_now)"
+  [ "$ram" -gt 0 ] || return 0
+  local size=4096
+  [ "$ram" -gt 8192 ] && size=2048
+  [ "$ram" -gt 32768 ] && return 0      # 大内存机器：物理内存足够吸收峰值，不占盘
+  # 这些文件系统上 swapfile 内核不接受（overlay）/ 需要 nocow 等特殊处理（btrfs），
+  # 与其建完再失败，不如一开始就说清楚。
+  local fstype; fstype="$(findmnt -no FSTYPE / 2>/dev/null || true)"
+  case "$fstype" in
+    overlay|btrfs|zfs|tmpfs)
+      warn "根分区是 $fstype（容器 / 特殊文件系统），不自动建 swap：请由宿主或云平台保证内存余量"
+      return 0 ;;
+  esac
+  local file=/swapfile
+  local avail; avail="$(fs_avail_mb /)"
+  if [ -n "$avail" ] && [ "$avail" -lt $((size + 6144)) ]; then
+    warn "根分区可用 ${avail}M，不足以安全创建 ${size}M swap 文件——跳过（建议先清盘或扩盘）"
+    return 0
+  fi
+  info "未检测到 swap，创建 ${size}M（$file）..."
+  if [ ! -f "$file" ]; then
+    # fallocate 瞬间完成；dd 兜底给不支持 fallocate 的文件系统
+    if ! fallocate -l "${size}M" "$file" 2>/dev/null; then
+      dd if=/dev/zero of="$file" bs=1M count="$size" conv=fsync 2>/dev/null \
+        || { rm -f "$file"; warn "创建 swap 文件失败，跳过"; return 0; }
+    fi
+  fi
+  chmod 600 "$file" 2>/dev/null || true
+  mkswap "$file" >/dev/null 2>&1 || { warn "mkswap 失败，跳过 swap"; return 0; }
+  if ! swapon "$file" 2>/dev/null; then
+    # fallocate 分配的文件在部分文件系统上内核拒绝当 swap：退回 dd 重写一次
+    rm -f "$file"
+    dd if=/dev/zero of="$file" bs=1M count="$size" conv=fsync 2>/dev/null \
+      || { rm -f "$file"; warn "swap 启用失败，跳过"; return 0; }
+    chmod 600 "$file" 2>/dev/null || true
+    if ! mkswap "$file" >/dev/null 2>&1 || ! swapon "$file" 2>/dev/null; then
+      rm -f "$file"; warn "swap 启用失败，跳过"; return 0
+    fi
+  fi
+  # 写进 fstab：否则重启后 swap 就没了，下次又被 OOM 教育一遍
+  if ! grep -q '^/swapfile' /etc/fstab 2>/dev/null; then
+    printf '/swapfile none swap sw 0 0\n' >> /etc/fstab
+  fi
+  ok "已启用 ${size}M swap（/swapfile，已写入 fstab）"
+}
+
+# ── 内核参数 ────────────────────────────────────────
+# tune_kernel 把大规模扫描会用到的内核参数提到够用的值，落盘到 /etc/sysctl.d/99-pangu.conf。
+# 逐个 `sysctl -w` 试而不是整份文件写完再 apply：/proc/sys 的键只有在对应模块加载后
+# 才存在（如 nf_conntrack），把不存在的键写进配置文件，开机时 sysctl 会报错。所以
+# 「当前读得到 + 写得进去 + 现值确实更低」的键才落盘。各项含义见 kernel_report 的对照表。
+tune_kernel(){
+  local f=/etc/sysctl.d/99-pangu.conf
+  local kept=()      # 文件里已有的键：原样保留（用户可能手工改过值），不重复追加
+  local line k
+  if [ -f "$f" ]; then
+    while IFS= read -r line; do
+      case "$line" in ''|'#'*) continue ;; esac
+      k="$(printf '%s' "$line" | sed 's/[[:space:]]*=.*//;s/^[[:space:]]*//')"
+      [ -n "$k" ] && kept+=("$k")
+    done < "$f"
+  else
+    printf '# Pangu 宿主机调优（install.sh 生成；只升不降，值可手工改）\n' > "$f"
+  fi
+  local applied=0
+  # in_kept KEY：该键是否已在配置文件里。
+  in_kept(){ local q; for q in ${kept[@]+"${kept[@]}"}; do [ "$q" = "$1" ] && return 0; done; return 1; }
+  # sysctl_raise KEY WANT：现值 ≥ 目标值就不动（只升不降）；写不进去就跳过。
+  sysctl_raise(){
+    local cur
+    in_kept "$1" && return 0
+    cur="$(sysctl -n "$1" 2>/dev/null || true)"
+    [ -n "$cur" ] || return 0
+    if [ "$cur" -ge "$2" ] 2>/dev/null; then return 0; fi
+    if sysctl -q -w "$1=$2" 2>/dev/null; then
+      printf '%s = %s\n' "$1" "$2" >> "$f"; kept+=("$1"); applied=$((applied + 1))
+    else
+      warn "内核参数 $1 写不进去（只读内核 / 容器环境？），跳过"
+    fi
+  }
+  sysctl_raise fs.file-max 2097152
+  sysctl_raise fs.inotify.max_user_watches 1048576
+  sysctl_raise net.core.somaxconn 4096
+  sysctl_raise net.ipv4.tcp_max_syn_backlog 8192
+  sysctl_raise net.ipv4.tcp_tw_reuse 1
+  # 连接跟踪表：Docker 开了 iptables 后本机发起的连接也被跟踪，默认 65536 条在
+  # 大规模扫描时几秒就满，满了之后新连接直接被丢（表现为大量超时而不是报错）。
+  sysctl_raise net.netfilter.nf_conntrack_max 1048576
+  # 临时端口范围：默认 32768–60999 约 2.8 万个，高并发下耗尽报 EADDRNOTAVAIL。
+  # 值是「低 高」两段，单独处理：两端各取更宽的合并——不收窄用户已经放宽的范围。
+  if ! in_kept net.ipv4.ip_local_port_range; then
+    local pr low high nl nh
+    pr="$(sysctl -n net.ipv4.ip_local_port_range 2>/dev/null || true)"
+    if [ -n "$pr" ]; then
+      low="$(printf '%s' "$pr" | awk '{print $1}')"; high="$(printf '%s' "$pr" | awk '{print $2}')"
+      nl="$low"; nh="$high"
+      [ "$low" -gt 10240 ] 2>/dev/null && nl=10240
+      [ "$high" -lt 65000 ] 2>/dev/null && nh=65000
+      if [ "$nl $nh" != "$low $high" ] && sysctl -q -w "net.ipv4.ip_local_port_range=$nl $nh" 2>/dev/null; then
+        printf 'net.ipv4.ip_local_port_range = %s %s\n' "$nl" "$nh" >> "$f"
+        kept+=("net.ipv4.ip_local_port_range"); applied=$((applied + 1))
+      fi
+    fi
+  fi
+  # swappiness：有 swap 才谈。10 = 尽量不用 swap，只在真的吃紧时才换出——既保住
+  # 「峰值不被 OOM 杀」，又不让常驻进程被早早换出去。用户调得更激进的（<10）不动。
+  if [ "$(swap_mb_now)" -gt 0 ] && ! in_kept vm.swappiness; then
+    local sw; sw="$(sysctl -n vm.swappiness 2>/dev/null || true)"
+    if [ -n "$sw" ] && [ "$sw" -gt 10 ] 2>/dev/null && sysctl -q -w vm.swappiness=10 2>/dev/null; then
+      printf 'vm.swappiness = 10\n' >> "$f"; kept+=("vm.swappiness"); applied=$((applied + 1))
+    fi
+  fi
+  if [ "$applied" -gt 0 ]; then
+    ok "内核参数已调优 ${applied} 项 → $f"
+  else
+    ok "内核网络 / 句柄参数已是够用值，无需调整"
+  fi
+  return 0
+}
+
+# kernel_report：只读。列出仍低于建议值的内核参数（--doctor 与装完后的体检用）。
+# 对照（为什么是这些值）：
+#   fs.file-max / somaxconn / tcp_max_syn_backlog / inotify —— 高并发探测的句柄与队列
+#   nf_conntrack_max —— 连接跟踪表，满了新连接直接被丢（表现为大量超时而非报错）
+kernel_report(){
+  local pair key want cur missing=""
+  for pair in 'fs.file-max:2097152' 'fs.inotify.max_user_watches:1048576' \
+              'net.core.somaxconn:4096' 'net.ipv4.tcp_max_syn_backlog:8192' \
+              'net.netfilter.nf_conntrack_max:1048576'; do
+    key="${pair%%:*}"; want="${pair#*:}"
+    cur="$(sysctl -n "$key" 2>/dev/null || true)"
+    [ -n "$cur" ] || continue
+    [ "$cur" -ge "$want" ] 2>/dev/null || missing="$missing $key=$cur（建议 $want）"
+  done
+  if [ -n "$missing" ]; then
+    warn "内核参数偏低（sudo ./install.sh --tune 可自动调优）：$missing"
+  else
+    ok "内核网络 / 句柄参数在建议值以上"
+  fi
+}
+
+# ── 日志上限 ────────────────────────────────────────
+# tune_journald：systemd-journald 默认最多吃到文件系统的 10%（上限 4G）。二进制形态下
+# 工具输出与扫描日志持续进 journal，不封顶迟早把系统盘写满。
+tune_journald(){
+  # 已经有人管过（主配置或任何 drop-in 里出现 SystemMaxUse）就不插手
+  if grep -rqs '^[[:space:]]*SystemMaxUse' /etc/systemd/journald.conf /etc/systemd/journald.conf.d 2>/dev/null; then
+    return 0
+  fi
+  mkdir -p /etc/systemd/journald.conf.d 2>/dev/null || return 0
+  printf '[Journal]\n# Pangu 宿主机调优（install.sh 生成）：系统日志总量上限\nSystemMaxUse=200M\n' \
+    > /etc/systemd/journald.conf.d/99-pangu.conf
+  systemctl restart systemd-journald >/dev/null 2>&1 || true
+  ok "系统日志（journald）总量上限 200M"
+}
+
+# tune_docker_daemon：给 Docker 守护进程的容器日志封顶。
+# json-file 驱动默认不限大小，长跑服务的 stdout 几个月能涨到几十 G，而且
+# `docker system df` 完全不统计这部分——这是最隐蔽的磁盘黑洞。
+# compose 里已给本项目的容器单独设了 logging；这一项是守护进程级的兜底（机器上
+# 其它容器也受保护）。
+tune_docker_daemon(){
+  local f=/etc/docker/daemon.json
+  if [ -f "$f" ] && grep -qs '"max-size"' "$f"; then
+    ok "Docker 容器日志上限已配置（$f）"
+    return 0
+  fi
+  mkdir -p /etc/docker 2>/dev/null || return 0
+  local swarm="inactive"
+  swarm="$(docker info -f '{{.Swarm.LocalNodeState}}' 2>/dev/null || echo inactive)"
+  # 合并而不是覆盖：国内机器的 daemon.json 里几乎都有 registry-mirrors，整份覆盖
+  # 等于把人家的镜像加速器删掉。合并交给 python3 / jq；两者都没有且文件非空时不碰。
+  local rc=0 out="" py
+  py="$(mktemp)"
+  if command -v python3 >/dev/null 2>&1; then
+    cat > "$py" <<'PYEOF'
+import json, os, shutil, sys
+path, swarm = sys.argv[1], sys.argv[2]
+data = {}
+if os.path.exists(path) and os.path.getsize(path) > 0:
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except ValueError as e:
+        sys.stderr.write("daemon.json is not valid JSON: %s\n" % e)
+        sys.exit(3)
+    if not isinstance(data, dict):
+        sys.stderr.write("daemon.json top level is not an object\n")
+        sys.exit(3)
+changed = False
+note = ""
+# log-opts 的 max-size/max-file 只对 json-file / local 驱动有意义；别的驱动上塞这些
+# 参数守护进程可能拒绝启动，所以不动。
+if data.get("log-driver", "json-file") in ("json-file", "local"):
+    opts = data.get("log-opts")
+    if opts is None:
+        opts = data["log-opts"] = {}
+    if isinstance(opts, dict):
+        if "max-size" not in opts:
+            opts["max-size"] = "20m"; changed = True
+        if "max-file" not in opts:
+            opts["max-file"] = "3"; changed = True
+else:
+    note = "log-driver=%s，不是 json-file：不动它的日志参数（各驱动参数不通用）" % data["log-driver"]
+# live-restore：守护进程重启 / 升级时容器不停机。swarm 模式与之不兼容。
+if swarm != "active" and "live-restore" not in data:
+    data["live-restore"] = True; changed = True
+if not changed:
+    sys.stdout.write(note)
+    sys.exit(0)
+if os.path.exists(path):
+    shutil.copy2(path, path + ".pangu-bak")
+with open(path, "w") as fh:
+    json.dump(data, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+sys.stdout.write(note)
+PYEOF
+    out="$(python3 "$py" "$f" "$swarm" 2>/dev/null || true)"; rc=$?
+  elif command -v jq >/dev/null 2>&1 && [ -f "$f" ]; then
+    out="$(jq '. + {"log-opts": ((.["log-opts"] // {}) + {"max-size":"20m","max-file":"3"})}' "$f" 2>/dev/null || true)"
+    if [ -n "$out" ] && printf '%s' "$out" | jq -e . >/dev/null 2>&1; then
+      cp -a "$f" "$f.pangu-bak"; printf '%s\n' "$out" > "$f"
+    else
+      rc=3
+    fi
+  else
+    printf '{\n  "log-driver": "json-file",\n  "log-opts": { "max-size": "20m", "max-file": "3" },\n  "live-restore": true\n}\n' > "$f"
+  fi
+  rm -f "$py"
+  if [ -n "$out" ]; then info "$out"; fi
+  if [ "$rc" != 0 ]; then
+    warn "/etc/docker/daemon.json 无法解析，未做改动——请手工加 log-opts: {max-size: 20m, max-file: 3} 后 systemctl restart docker"
+    return 0
+  fi
+  # 日志上限与 live-restore 只在守护进程启动时读取。重启 docker 会短暂停掉所有容器，
+  # 所以：只有本项目的容器在跑（或没有容器在跑）时才自动重启；机器上还有别的容器
+  # 时只提示，由运维择机重启。
+  local project foreign
+  project="$(basename "$INSTALL_DIR" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_-\n')"
+  foreign="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -v "^${project}-" || true)"
+  if [ -n "$foreign" ]; then
+    warn "已写 $f，但机器上还有其它容器在运行，未自动重启 docker——日志上限要在重启后生效（择机：systemctl restart docker）"
+    return 0
+  fi
+  info "重启 docker 使日志上限生效..."
+  if ! systemctl restart docker 2>/dev/null; then
+    # 改完起不来：立刻回滚——docker 挂了比日志不封顶严重得多
+    if [ -f "$f.pangu-bak" ]; then cp -a "$f.pangu-bak" "$f"; else rm -f "$f"; fi
+    systemctl restart docker 2>/dev/null || true
+    warn "docker 重启失败，已回滚 daemon.json（journalctl -u docker -n 30 看原因）"
+    return 0
+  fi
+  local i
+  for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+  if [ "$swarm" = "active" ]; then
+    ok "Docker 容器日志上限 20MB×3 已生效（$f）"
+  else
+    ok "Docker 容器日志上限 20MB×3 已生效，并开启 live-restore（$f：以后重启 / 升级 docker 时容器不再停机）"
+  fi
+  return 0
+}
+
+# tune_host：安装前的宿主机调优总入口。
+tune_host(){
+  if [ "$IS_MAC" = "1" ]; then return 0; fi
+  if [ "$NO_TUNE" = "1" ]; then
+    info "已按设置跳过宿主机调优（--tune 可重新开启）"
+    return 0
+  fi
+  info "宿主机调优..."
+  ensure_swap
+  tune_kernel
+  tune_journald
+}
+
+# ── 备份 ────────────────────────────────────────────
+# PostgreSQL 是平台的唯一存储（任务 / 发现 / 证据索引 / 账号），丢了无法重建。
+#   - 升级前：install.sh 自动做一次库备份（升级会跑 schema 迁移，这是唯一没有
+#     「撤销」按钮的操作）；
+#   - 平时：pangu-backup.timer 每日 03:30 库全量 + 每周日 data 归档。
+# 备份落在本机（$INSTALL_DIR/backups）：防误删、误升级、坏迁移，不防整盘故障——
+# 整盘要靠云快照或把 backups 同步到别处，这一点在体检里如实提示。
+backup_db_now(){   # $1=文件名里的标签（pre-upgrade）
+  local dest="$INSTALL_DIR/backups" out rc=0 old
+  mkdir -p "$dest"; chmod 700 "$dest" 2>/dev/null || true
+  out="$dest/db-$1-$(date +%Y%m%d-%H%M%S).sql.gz"
+  if [ "$MODE" = "docker" ]; then
+    ( cd "$INSTALL_DIR" && docker compose exec -T postgres sh -c 'pg_dumpall -U "$POSTGRES_USER" | gzip -1' ) > "$out" 2>/dev/null || rc=1
+  elif [ -f "$INSTALL_DIR/config.json" ]; then
+    as_pg pg_dumpall 2>/dev/null | gzip -1 > "$out" || rc=1
+  else
+    return 0
+  fi
+  if [ "$rc" != 0 ] || ! dump_ok "$out"; then
+    rm -f "$out"
+    warn "升级前数据库备份没有成功（数据库没在运行？）——继续安装，装好后建议手工跑一次 $INSTALL_DIR/backup.sh"
+    return 0
+  fi
+  chmod 600 "$out"
+  ok "升级前数据库备份: $out（$(du -h "$out" | cut -f1)）"
+  # 升级前备份只留最近 5 份
+  old="$(ls -1t "$dest"/db-"$1"-*.sql.gz 2>/dev/null | tail -n +6 || true)"
+  if [ -n "$old" ]; then printf '%s\n' "$old" | xargs rm -f; fi
+  return 0
+}
+
+install_backup(){
+  [ "$IS_MAC" = "1" ] && return 0
+  if [ "$NO_BACKUP" = "1" ]; then
+    info "已按设置跳过自动备份（--backup 可重新开启）"
+    return 0
+  fi
+  local bash_bin; bash_bin="$(command -v bash || echo /bin/bash)"
+  cat > "$INSTALL_DIR/backup.sh" <<'BKEOF'
+#!/usr/bin/env bash
+# Pangu 备份脚本（由 install.sh 生成，重跑 install.sh 会覆盖，勿手工改）。
+#   由 pangu-backup.timer 每日 03:30 触发：
+#     数据库全量（保留 14 天）；每周日另归档 data 目录（保留 2 份）
+# 手工执行：sudo ./backup.sh          做当前到期该做的
+#           sudo ./backup.sh --full   立刻做数据库 + data 归档
+set -uo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+DEST="$DIR/backups"
+MODE="__MODE__"
+PG_SUPER="__PG_SUPER__"
+KEEP_DB_DAYS=14
+KEEP_DATA=2
+ts="$(date +%Y%m%d-%H%M%S)"
+rc=0
+mkdir -p "$DEST" && chmod 700 "$DEST"
+
+# ① 数据库（唯一存储，最关键）
+db_dump="$DEST/db-$ts.sql.gz"
+fail=0
+if [ "$MODE" = "docker" ]; then
+  (cd "$DIR" && docker compose exec -T postgres sh -c 'pg_dumpall -U "$POSTGRES_USER" | gzip -1') > "$db_dump" 2>/dev/null || fail=1
+else
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -u "$PG_SUPER" pg_dumpall 2>/dev/null | gzip -1 > "$db_dump" || fail=1
+  else
+    su -s /bin/sh "$PG_SUPER" -c pg_dumpall 2>/dev/null | gzip -1 > "$db_dump" || fail=1
+  fi
+fi
+# 校验：真是一份 PostgreSQL 全量转储，而不是失败留下的空壳
+if [ "$fail" = 0 ] && ! gzip -t "$db_dump" 2>/dev/null; then fail=1; fi
+if [ "$fail" = 0 ] && [ "$(gzip -dc "$db_dump" 2>/dev/null | grep -c 'PostgreSQL database cluster dump' || true)" -eq 0 ]; then fail=1; fi
+if [ "$fail" = 0 ]; then
+  chmod 600 "$db_dump"
+  echo "[backup] db -> $db_dump ($(du -h "$db_dump" | cut -f1))"
+else
+  rm -f "$db_dump"; echo "[backup] db FAILED" >&2; rc=1
+fi
+
+# ② data 目录（任务工作区 / 流量录制 / 证据 / 会话）：每周日归档一次。
+#    排除 nuclei-templates——那是可重新下载的模板库，常有 1GB 上下，不值得占备份空间。
+if [ "${1:-}" = "--full" ] || [ "$(date +%u)" = "7" ]; then
+  if [ -d "$DIR/data" ]; then
+    size_mb="$(du -sm "$DIR/data" 2>/dev/null | cut -f1)"
+    avail_mb="$(df -Pm "$DEST" | awk 'NR==2{print $4}')"
+    # 余量不足就跳过：备份把盘写满比不备份更糟（会把正在跑的服务一起拖死）
+    if [ "${size_mb:-0}" -gt 0 ] && [ "${avail_mb:-0}" -gt $((size_mb * 2 + 1024)) ]; then
+      arc="$DEST/data-$ts.tar.gz"
+      # tar 退出码 1 =「文件在读取时发生了变化」，对正在运行的目录是常态，不算失败
+      if ( tar -C "$DIR" --exclude='data/nuclei-templates' -cf - data 2>/dev/null; [ $? -le 1 ] ) | gzip -1 > "$arc"; then
+        chmod 600 "$arc"; echo "[backup] data -> $arc ($(du -h "$arc" | cut -f1))"
+      else
+        rm -f "$arc"; echo "[backup] data FAILED" >&2; rc=1
+      fi
+    else
+      echo "[backup] data skipped: data ${size_mb:-?}M, avail ${avail_mb:-?}M (not enough headroom)"
+    fi
+  fi
+fi
+
+# ③ 清理过期备份
+find "$DEST" -maxdepth 1 -name 'db-*.sql.gz' -mtime +"$KEEP_DB_DAYS" -delete 2>/dev/null
+ls -1t "$DEST"/data-*.tar.gz 2>/dev/null | tail -n +"$((KEEP_DATA + 1))" | while IFS= read -r stale; do rm -f "$stale"; done
+exit "$rc"
+BKEOF
+  sed -i "s|^MODE=.*|MODE=\"$MODE\"|;s|^PG_SUPER=.*|PG_SUPER=\"$PG_SUPER\"|" "$INSTALL_DIR/backup.sh"
+  chmod 700 "$INSTALL_DIR/backup.sh"
+  cat > /etc/systemd/system/pangu-backup.service <<UNIT
+[Unit]
+Description=PANGU backup (database dump + data archive)
+# 数据库没起来时不做：备份脚本会自己失败并留日志，不在这里重试
+After=docker.service postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=$bash_bin $INSTALL_DIR/backup.sh
+# 备份是后台杂务：给扫描任务让路
+Nice=10
+IOSchedulingClass=idle
+UNIT
+  cat > /etc/systemd/system/pangu-backup.timer <<UNIT
+[Unit]
+Description=Run PANGU backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+# 错过的（关机期间）开机后补跑一次
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
+UNIT
+  systemctl daemon-reload
+  if systemctl enable --now pangu-backup.timer >/dev/null 2>&1; then
+    ok "自动备份已启用：每日 03:30 数据库全量（保留 14 天），每周日另归档 data（保留 2 份）→ $INSTALL_DIR/backups"
+  else
+    warn "备份定时器未能启用（非 systemd 环境？）——可手工跑：$INSTALL_DIR/backup.sh"
+  fi
+  return 0
+}
+
+# ── 升级前的两项保护 ────────────────────────────────
+# 任务运行期间重启服务，正在跑的 worker 这一步会被取消（已写回的事实还在，但那一步
+# 的探测结果丢了）。所以先数一下，把决定权交给用户。
+RUNNING_TASKS_SQL="SELECT count(*) FROM tasks WHERE status NOT IN ('done','failed','timeout')"
+warn_running_tasks(){
+  local n=""
+  if [ "$MODE" = "docker" ]; then
+    n="$(printf '%s' "$RUNNING_TASKS_SQL" \
+        | ( cd "$INSTALL_DIR" && docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "${POSTGRES_DB:-pangu}" -tA' ) 2>/dev/null \
+        | tr -d '[:space:]' || true)"
+  elif [ -f "$INSTALL_DIR/config.json" ] && command -v psql >/dev/null 2>&1; then
+    n="$(printf '%s' "$RUNNING_TASKS_SQL" | as_pg psql -d pangu -tA 2>/dev/null | tr -d '[:space:]' || true)"
+  fi
+  case "$n" in ''|*[!0-9]*|0) return 0 ;; esac
+  warn "有 $n 个任务还没到终态：现在重启会掐断正在跑的这一步（已写回的事实不受影响，事后可在页面重跑该意图）"
+  if [ "$ASSUME_YES" != "1" ] && [ "$CAN_PROMPT" = "1" ] && [ -r /dev/tty ]; then
+    printf '仍然继续？(y/N) '
+    local ans=""; read -r -t 60 ans </dev/tty || ans=""
+    case "$ans" in
+      y|Y|yes|YES) : ;;
+      *) die "已中止（等任务跑完再升级，或先在页面暂停任务）" ;;
+    esac
+  fi
+}
+
+# warn_port_busy PORT 允许的进程名...：端口已经被别的程序占着时提前说。拉完 3.66G
+# 镜像、替换完二进制才发现端口冲突，白等。
+warn_port_busy(){
+  local port="$1"; shift
+  command -v ss >/dev/null 2>&1 || return 0
+  local names p allowed okp busy=""
+  names="$(ss -Hltnp "sport = :$port" 2>/dev/null | grep -o '"[^"]*"' | tr -d '"' | sort -u || true)"
+  [ -n "$names" ] || return 0
+  for p in $names; do
+    okp=0
+    for allowed in "$@"; do [ "$p" = "$allowed" ] && okp=1; done
+    if [ "$okp" != 1 ]; then busy="$busy $p"; fi
+  done
+  [ -n "$busy" ] || return 0
+  warn "端口 $port 已被其它进程占用（$busy）：新服务会起不来。先停掉它，或用 --listen / PANGU_UI_PORT 换端口"
+}
+
+# ── 安全体检（只读）────────────────────────────────
+# 只报告不自动改：防火墙、SSH 这类配置自动改错了会连不上机器，由人来做决定。
+security_report(){
+  if [ "$IS_MAC" = "1" ]; then return 0; fi
+  printf '\n── 安全体检（只报告，不改任何配置）──\n'
+  local t perm fw
+  if command -v sshd >/dev/null 2>&1; then
+    t="$(sshd -T 2>/dev/null | grep -E '^(permitrootlogin|passwordauthentication) ' | tr '\n' ' ' || true)"
+    case "$t" in
+      *'permitrootlogin yes'*) warn "SSH 允许 root 登录：建议 PermitRootLogin prohibit-password 或改用密钥" ;;
+    esac
+    case "$t" in
+      *'passwordauthentication yes'*) info "SSH 仍允许密码登录：公网机器建议改用密钥并装 fail2ban（本机有大量攻击工具，是重点目标）" ;;
+    esac
+  fi
+  # Docker API 明文端口 = 任何能连上的人都是 root
+  if command -v ss >/dev/null 2>&1 && ss -Hltn 2>/dev/null | grep -Eq ':(2375|2376)[[:space:]]'; then
+    warn "Docker API 端口（2375/2376）在监听：等同把 root 交给任何能连上的人，建议立刻关掉"
+  fi
+  if [ -z "$DOMAIN" ]; then
+    warn "当前按 IP + HTTP 访问：会话令牌与密码明文传输。公网部署请重跑 install.sh --domain=NAME（自动配 HTTPS）"
+  fi
+  if ! grep -rqs 'PANGU_INIT_TOKEN' "$INSTALL_DIR/.env" /etc/systemd/system/pangu.service 2>/dev/null; then
+    info "公网部署建议设置 PANGU_INIT_TOKEN：否则服务启动到您设置管理员密码之间，先到的访客可以抢注管理员"
+  fi
+  if [ "$MODE" = "docker" ] && [ -f "$INSTALL_DIR/.env" ]; then
+    perm="$(stat -c %a "$INSTALL_DIR/.env" 2>/dev/null || true)"
+    if [ "$perm" != "600" ]; then warn ".env 权限是 $perm（内含数据库口令），建议 chmod 600"; fi
+  fi
+  fw="未检测到主机防火墙"
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
+    fw="ufw 已启用"
+  elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    fw="firewalld 已启用"
+  elif command -v nft >/dev/null 2>&1 && [ -n "$(nft list ruleset 2>/dev/null | grep -vE '^[[:space:]]*(#|$)' | grep -vi docker | head -1)" ]; then
+    fw="nftables 有规则"
+  fi
+  printf '  主机防火墙: %s\n' "$fw"
+  if [ "$fw" = "未检测到主机防火墙" ]; then
+    info "没有主机防火墙时，请确认云安全组只放行必要端口（SSH / 80 / 443 / UI 端口）；数据库端口 5432 不要对公网开放"
+  fi
+}
+
+# ── --doctor：对既有部署做只读体检 ──────────────────
+run_doctor(){
+  local mode="binary"
+  if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then mode="docker"; fi
+  MODE="$mode"      # --doctor 不经过形态选择，安全体检要靠探测到的形态判断（如 .env 权限）
+  info "Pangu 部署体检（只读：不改任何文件、不重启任何服务）"
+  printf '  部署形态: %s   安装目录: %s\n' "$mode" "$INSTALL_DIR"
+  local port=8787 code cid src old crashes last
+  if [ "$mode" = "docker" ]; then
+    port="$(grep -E '^PANGU_UI_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2)"
+    if [ -z "$port" ]; then port=8787; fi
+  else
+    port="${LISTEN_ADDR##*:}"
+  fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${port}/api/health" 2>/dev/null || true)"
+  if [ "$code" = "200" ]; then
+    ok "服务健康（http://127.0.0.1:${port}/api/health）"
+  else
+    warn "服务未响应（HTTP ${code}）"
+  fi
+  if [ "$mode" = "docker" ]; then
+    cid="$(cd "$INSTALL_DIR" && docker compose ps -q pangu 2>/dev/null | head -1 || true)"
+    if [ -z "$cid" ]; then
+      warn "pangu 容器未在运行（cd $INSTALL_DIR && docker compose ps / logs --tail 50 查看）"
+    else
+      src="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Source}}{{end}}{{end}}' "$cid" 2>/dev/null || true)"
+      if [ -n "$src" ] && same_path "$src" "$INSTALL_DIR/data"; then
+        ok "数据已落在宿主机 $INSTALL_DIR/data（容器重建不丢）"
+      else
+        warn "容器的 /app/data 没有挂到 $INSTALL_DIR/data：数据在容器层里，容器重建即丢——重跑 install.sh --mode=docker 会在重建前自动迁移"
+      fi
+      case "$(docker inspect -f '{{.HostConfig.LogConfig.Config}}' "$cid" 2>/dev/null || true)" in
+        *max-size*) ok "容器日志有大小上限" ;;
+        *) warn "容器日志没有大小上限：只增不减，迟早写满磁盘——重跑 install.sh --mode=docker 自动加上" ;;
+      esac
+      ( cd "$INSTALL_DIR" && docker compose ps 2>/dev/null ) | sed 's/^/    /' || true
+    fi
+    old="$(docker images --format '{{.Repository}}:{{.Tag}}  {{.Size}}' 2>/dev/null | grep -i '/pangu:' | sed 's/^/    /' || true)"
+    if [ -n "$old" ]; then printf '  本机镜像（旧版本确认不回滚后可 docker rmi 回收磁盘）:\n%s\n' "$old"; fi
+  else
+    case "$(systemctl is-active "$SERVICE" 2>/dev/null || true)" in
+      active) ok "服务 $SERVICE 在运行" ;;
+      *) warn "服务 $SERVICE 不在运行（systemctl status $SERVICE / journalctl -u $SERVICE -n 50）" ;;
+    esac
+    crashes="$(journalctl -u "$SERVICE" -n 200 --no-pager 2>/dev/null | grep -c '异常退出' || true)"
+    if [ "${crashes:-0}" -gt 0 ]; then
+      warn "最近 200 行日志里有 ${crashes} 次「异常退出」：多半是配置问题（数据库口令 / 端口 / 依赖），看 journalctl -u $SERVICE"
+    fi
+  fi
+  if [ "$IS_MAC" != "1" ]; then host_report; fi
+  security_report
+  exit 0
+}
+
+# host_report：宿主机侧的只读体检（Linux only）。run_doctor 与每次装完都会跑——
+# 「调了没有、生效没有」必须能验证，而不是装的时候打一行「已调优」就算数。
+host_report(){
+  printf '  内存: %sM（swap %sM）  根分区可用: %sM\n' "$(mem_mb_now)" "$(swap_mb_now)" "$(fs_avail_mb /)"
+  if [ "$(swap_mb_now)" -eq 0 ]; then
+    warn "没有 swap：内存峰值超出物理内存时进程会被直接杀掉（sudo ./install.sh --tune 自动创建）"
+  fi
+  kernel_report
+  if grep -rqs '^[[:space:]]*SystemMaxUse' /etc/systemd/journald.conf /etc/systemd/journald.conf.d 2>/dev/null; then
+    ok "系统日志（journald）有总量上限"
+  else
+    warn "系统日志（journald）没有总量上限（默认可吃到文件系统的 10%）"
+  fi
+  if systemctl is-enabled pangu-backup.timer >/dev/null 2>&1; then
+    local last
+    last="$(ls -1t "$INSTALL_DIR"/backups/db-*.sql.gz 2>/dev/null | head -1 || true)"
+    if [ -n "$last" ]; then
+      ok "自动备份已启用，最近一份: $last（$(du -h "$last" 2>/dev/null | cut -f1)）"
+    else
+      ok "自动备份已启用（每日 03:30 首次触发；想立刻验一次：$INSTALL_DIR/backup.sh）"
+    fi
+  else
+    warn "未启用自动备份：PostgreSQL 是唯一存储，丢了无法重建（sudo ./install.sh --backup 开启）"
+  fi
+  if [ -d "$INSTALL_DIR/backups" ]; then
+    info "备份与数据在同一台机器上：防误删 / 误升级 / 坏迁移，不防整盘故障——重要部署请定期把 $INSTALL_DIR/backups 同步到别处或做云快照"
+  fi
+}
+
 # ── 资源前置检查（只提醒不阻断）────────────────────
 mem_kb="$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+swap_kb="$(awk '/SwapTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+# IS_UPGRADE：安装目录里已经有部署产物 → 按升级处理（升级前自动备份数据库）。
+IS_UPGRADE=0
+if [ -f "$INSTALL_DIR/config.json" ] || [ -f "$INSTALL_DIR/docker-compose.yml" ]; then IS_UPGRADE=1; fi
 if [ "${mem_kb:-0}" -gt 0 ] && [ "$mem_kb" -lt 3800000 ]; then
   warn "内存 < 4G：多 worker 并发 + 压缩器会吃紧（建议 4C8G 起）"
+fi
+if [ "$IS_MAC" != "1" ] && [ "${swap_kb:-0}" -eq 0 ] && [ "$mem_kb" -gt 0 ]; then
+  if [ "$NO_TUNE" = "1" ]; then
+    warn "没有 swap 且宿主调优已关闭：Chromium / LibreOffice 的内存峰值超出物理内存时进程会被直接杀掉"
+  else
+    info "没有 swap：将在「宿主机调优」阶段自动创建"
+  fi
+fi
+if [ "$IS_MAC" != "1" ]; then
+  # 时间不同步时，任务时间戳、报告、周期调度、LLM 接口签名全都不可信
+  if command -v timedatectl >/dev/null 2>&1 && [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)" = "no" ]; then
+    warn "系统时间未与 NTP 同步（timedatectl 查看；apt install systemd-timesyncd 或 chrony）"
+  fi
+  # 不是「可能会出事」，是「已经出过事」
+  _oom="$(dmesg 2>/dev/null | grep -ci 'out of memory' || true)"
+  if [ -n "$_oom" ] && [ "$_oom" -gt 0 ]; then
+    warn "内核日志里有 ${_oom} 条 OOM 记录：这台机器已经发生过内存耗尽（dmesg -T | grep -i oom 看是哪个进程）"
+  fi
 fi
 disk_avail="$(df -Pk / 2>/dev/null | awk 'NR==2{print $4}')"
 if [ -n "${disk_avail:-}" ] && [ "$disk_avail" -lt 10485760 ]; then
   warn "根分区可用 < 10G：装工具/SecLists(约2.5G)/nuclei 模板/chromium 可能不够（建议 ≥40G）"
+fi
+if [ "$IS_UPGRADE" = "1" ]; then
+  info "检测到既有部署：按升级处理（升级前自动备份数据库，配置与数据保留）"
 fi
 if command -v python3 >/dev/null 2>&1; then
   pyver="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo "0.0")"
@@ -229,6 +948,11 @@ if command -v python3 >/dev/null 2>&1; then
   esac
 else
   warn "未检测到 python3：内置 FOFA MCP 需要 Python ≥3.10（不影响主服务）"
+fi
+
+# ── --doctor：到此为止，只体检不安装（在任何交互 / 下载之前退出）────
+if [ "$DOCTOR" = "1" ]; then
+  run_doctor
 fi
 
 # ── 出网代理：交互式配置 + 自动验证 ────────────────
@@ -580,6 +1304,13 @@ mkdir -p "$INSTALL_DIR"
   printf 'DOMAIN=%s\n' "$DOMAIN"
   printf 'TRUSTED_PROXY=%s\n' "$TRUSTED_PROXY"
   printf 'PROXY_MODE=%s\n' "$PROXY_MODE"
+  if [ "$IS_MAC" = "1" ]; then
+    # macOS 不做宿主调优/备份，不落开关（免得带到别的机器上产生误导）
+    :
+  else
+    printf 'HOST_TUNE=%s\n' "$([ "$NO_TUNE" = "1" ] && echo 0 || echo 1)"
+    printf 'HOST_BACKUP=%s\n' "$([ "$NO_BACKUP" = "1" ] && echo 0 || echo 1)"
+  fi
 } > "$INSTALL_STATE"
 # DOMAIN_ENV 组装（deploy_binary 用）：此时反代方案/受信代理已是最终值。
 if [ -n "$DOMAIN" ]; then
@@ -636,6 +1367,11 @@ deploy_binary(){
   if [ "$IS_MAC" = "1" ]; then deploy_binary_darwin; return; fi
   command -v systemctl >/dev/null 2>&1 || die "未检测到 systemd"
   command -v unzip   >/dev/null 2>&1 || { apt-get install -y unzip >/dev/null 2>&1 || dnf install -y unzip >/dev/null 2>&1 || die "需要 unzip"; }
+
+  # 两项提前到下载之前：有任务在跑（用户可能选择中止）或端口被占（必然起不来）
+  # 时，不该先让人白等一次下载。
+  warn_running_tasks
+  warn_port_busy "${LISTEN_ADDR##*:}" pangu
 
   fetch_release
   local src="$TMP/unpack/pangu-${VERSION#v}-${PKG_ARCH}"
@@ -796,6 +1532,9 @@ SystemCallErrorNumber=EPERM
 # 注：加了能力就不该再加 NoNewPrivileges 之外的提权面；这三项是渗透扫描的最小集。
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+# 文件句柄上限：nuclei/httpx/ffuf 都是句柄大户，systemd 默认软限 1024 在高并发
+# 探测时会让扫描器自己报 too many open files。
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
@@ -803,7 +1542,9 @@ UNIT
   systemctl daemon-reload
   systemctl enable "$SERVICE" 2>/dev/null || true
   # 升级场景下服务可能已经在跑：enable --now 不会重启它，必须显式 restart
-  # 才会用上新换的二进制。
+  # 才会用上新换的二进制。重启之前先留一份库备份：新二进制起来会跑 schema
+  # 迁移，这是整个升级流程里唯一不可回退的一步。
+  if [ -f "$INSTALL_DIR/config.json" ]; then backup_db_now "pre-upgrade"; fi
   systemctl restart "$SERVICE"
   ok "systemd 服务已启动（${SERVICE}）"
 
@@ -1083,6 +1824,25 @@ deploy_docker(){
   docker info >/dev/null 2>&1 || die "Docker 守护进程未运行（systemctl start docker）"
   command -v unzip >/dev/null 2>&1 || { apt-get install -y unzip >/dev/null 2>&1 || dnf install -y unzip >/dev/null 2>&1 || die "需要 unzip"; }
 
+  # 磁盘前置：镜像解压后 3.66GB，Docker 数据目录与系统盘同盘时，拉取中途把盘写满
+  # 不只是安装失败——宿主机自己也会跟着出问题。低于 4G 直接拒绝。
+  local docker_root avail
+  docker_root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"
+  avail="$(fs_avail_mb "$docker_root")"
+  if [ -n "$avail" ]; then
+    if [ "$avail" -lt 4096 ]; then
+      die "Docker 数据目录可用空间不足 4G（$docker_root 仅剩 ${avail}M）：镜像解压后 3.66GB。先清理（docker system prune / 删旧镜像）再装"
+    fi
+    if [ "$avail" -lt 20480 ]; then
+      warn "Docker 数据目录可用 ${avail}M（手册口径：与数据卷同盘时至少留 20G，否则升级解压到一半会因空间不足失败）"
+    fi
+  fi
+  # 两项提前到拉镜像之前：有任务在跑（用户可能选择中止）或端口被占（必然起不来）
+  # 时，不该先让人白等一次 3.66G 的下载。
+  warn_running_tasks
+  local _pre_port; _pre_port="$(grep -E '^PANGU_UI_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2)"
+  warn_port_busy "${_pre_port:-8787}" docker-proxy
+
   # skills 要挂进容器：空目录挂载会覆盖镜像内置的 /app/skills，所以先从发行包取一份
   fetch_release
   local src="$TMP/unpack/pangu-${VERSION#v}-${PKG_ARCH}"
@@ -1096,6 +1856,9 @@ deploy_docker(){
   if [ ! -f "$INSTALL_DIR/.env" ]; then
     local PG_PASS
     PG_PASS="$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)"
+    # 容器时区跟随宿主机：否则任务时间戳、报告、周期调度全部是 UTC，比本地慢 8 小时
+    local HOST_TZ=""
+    HOST_TZ="$(host_timezone)"
     cat > "$INSTALL_DIR/.env" <<ENV
 POSTGRES_USER=pangu
 POSTGRES_PASSWORD=$PG_PASS
@@ -1107,6 +1870,8 @@ PROXY_PORT=$PROXY_PORT
 # UI 对外端口（compose 的 8787 映射宿主侧）。走 Cloudflare 代理时必须用
 # 它支持的端口（80/443/2052/2083/2086/2087/8080/8880/8443），如 PANGU_UI_PORT=2052。
 PANGU_UI_PORT=${PORT}
+PANGU_LIMITS=$([ "$NO_LIMITS" = "1" ] && echo 0 || echo 1)
+TZ=${HOST_TZ}
 ENV
     chmod 600 "$INSTALL_DIR/.env"
     ok "已生成 $INSTALL_DIR/.env（含随机数据库密码，权限 600）"
@@ -1148,6 +1913,22 @@ ENV
       fi
       ok "已同步 .env 里的装机代理"
     fi
+    # 早期版本生成的 .env 没有时区与容器资源上限两键：补上（已有则不动）。
+    if ! grep -q '^TZ=' "$INSTALL_DIR/.env"; then
+      local _tz; _tz="$(host_timezone)"
+      if [ -n "$_tz" ]; then printf 'TZ=%s\n' "$_tz" >> "$INSTALL_DIR/.env"; fi
+    fi
+    if grep -q '^PANGU_LIMITS=' "$INSTALL_DIR/.env"; then
+      if [ "$NO_LIMITS" = "1" ]; then env_set "$INSTALL_DIR/.env" PANGU_LIMITS 0; fi
+    else
+      printf 'PANGU_LIMITS=%s\n' "$([ "$NO_LIMITS" = "1" ] && echo 0 || echo 1)" >> "$INSTALL_DIR/.env"
+    fi
+    # 照着 README 的 .env.example 抄、却没改口令的部署：这个口令在仓库里是公开的，
+    # 拿到数据库口令可以通过 reset-password.sh 重置管理员密码。
+    if grep -Eq '^POSTGRES_PASSWORD=(change-me-please|changeme|password|postgres|pangu|123456|admin)$' "$INSTALL_DIR/.env"; then
+      warn ".env 里的 POSTGRES_PASSWORD 仍是示例值——数据库对知道这个值的人敞开，请改成强口令（openssl rand -base64 18）"
+      warn "注意：postgres 数据卷一旦用旧口令初始化过，改 .env 不会重置卷内口令，需要同步 ALTER ROLE"
+    fi
   fi
   # 域名部署：预置 HTTPS 相关变量（反代 TLS 下会话 cookie 才带 Secure）。
   # 幂等：升级重跑不重复追加、已有值不覆盖。TRUSTED_PROXY 来自交互追问或
@@ -1164,8 +1945,29 @@ ENV
   if [ -n "$DOMAIN" ] && [ "$PROXY_MODE" != "none" ]; then
     UI_BIND="127.0.0.1:"
   fi
+  # 容器资源上限：不给的话，一个扫描任务的内存峰值能把整机拖死（数据库、SSH 一起
+  # 卡住）；给了则最坏只是该容器被杀。上限按主机内存给系统与数据库留出余量来定；
+  # 主机有 swap 时允许容器用到 2 倍上限（「峰值不被硬杀」靠的就是 swap）。
+  local limit_pangu="" limit_pg=""
+  if ! grep -q '^PANGU_LIMITS=0' "$INSTALL_DIR/.env" 2>/dev/null; then
+    local ram m
+    ram="$(mem_mb_now)"
+    if [ "$ram" -gt 0 ]; then
+      m=$(( ram - 1536 ))
+      [ "$m" -lt 1024 ] && m=1024
+      limit_pangu="    mem_limit: ${m}m"
+      if [ "$(swap_mb_now)" -gt 0 ]; then
+        limit_pangu="$limit_pangu"$'\n'"    memswap_limit: $(( m * 2 ))m"
+      fi
+      # 进程数上限（线程也计入）：防某个工具进程泄漏 / fork 失控拖垮宿主机
+      limit_pangu="$limit_pangu"$'\n'"    pids_limit: 4096"
+      limit_pg="    mem_limit: 512m"
+    fi
+  fi
   cat > "$INSTALL_DIR/docker-compose.yml" <<COMPOSE
 # 由 install.sh 生成。数据在 ./data，skills 在 ./skills，数据库在卷 pgdata。
+# 日志上限 / 时区 / 健康检查 / 停机宽限 / 资源上限由 install.sh 按宿主机情况生成，
+# 重跑 install.sh 会覆盖本文件；要长期自定义请新建 docker-compose.override.yml。
 services:
   postgres:
     image: postgres:16-alpine
@@ -1175,12 +1977,21 @@ services:
       POSTGRES_DB: \${POSTGRES_DB:-pangu}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # 并行查询 / 大排序溢出到共享内存，默认 64M 偏小
+    shm_size: 256mb
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \${POSTGRES_USER:-pangu} -d \${POSTGRES_DB:-pangu}"]
       interval: 5s
       timeout: 3s
       retries: 10
     restart: unless-stopped
+    # 容器日志只增不减：不封顶迟早写满磁盘（docker system df 还不统计这部分）
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+${limit_pg}
 
   pangu:
     image: \${PANGU_IMAGE}:\${PANGU_TAG}
@@ -1198,6 +2009,8 @@ services:
       # 装机代理：宿主环境页的「一键安装」和后台情报同步用。Docker 形态没有
       # config.json，只能走环境变量；服务端读它作为数据库 setting 的兜底。
       PANGU_INSTALL_PROXY: \${PANGU_INSTALL_PROXY:-}
+      # 时区跟随宿主机（.env 的 TZ）：否则任务时间戳 / 报告 / 周期调度全是 UTC
+      TZ: \${TZ:-UTC}
     ports:
       # 对外端口从 .env 的 PANGU_UI_PORT 读（默认 8787）。走 Cloudflare 等
       # CDN 代理时改成其支持的端口（如 2052），改完 docker compose up -d 生效。
@@ -1212,6 +2025,28 @@ services:
       - ./data:/app/data
       - ./skills:/app/skills
     restart: unless-stopped
+    # 停机宽限：docker stop 默认 10 秒后 SIGKILL，在跑的 worker 这一步直接断掉。
+    # 给足 60 秒让它写完手头的结果。
+    stop_grace_period: 60s
+    # 健康检查：start.sh 包装进程活着不等于 pangu 活着（本体反复崩溃时容器状态
+    # 仍是 running）。`docker compose ps` 显示 healthy 才是真的起来了。
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8787/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    # 文件句柄：nuclei/httpx/ffuf 都是句柄大户
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+${limit_pangu}
 
 volumes:
   pgdata:
@@ -1219,9 +2054,70 @@ COMPOSE
 
   ok "已生成 $INSTALL_DIR/docker-compose.yml"
   info "拉取镜像 $IMAGE:$VERSION ..."
-  ( cd "$INSTALL_DIR" && docker compose pull )
-  ( cd "$INSTALL_DIR" && docker compose up -d )
+  ( cd "$INSTALL_DIR" && docker compose pull ) \
+    || die "镜像拉取失败（网络 / 代理不通？或磁盘空间不足——df -h 看 Docker 数据目录）"
+
+  # 升级前的三道保护，顺序不能换：
+  #   ① 备份数据库——新版本起来会跑 schema 迁移，这是升级里唯一不可回退的一步；
+  #   ② 旧容器的数据若还在容器层里，先迁到 ./data（否则 ③ 之后的重建会把它丢掉）；
+  #   ③ Docker 守护进程的日志上限。
+  if [ "$IS_UPGRADE" = "1" ]; then backup_db_now "pre-upgrade"; fi
+  rescue_container_data
+  if [ "$NO_TUNE" = "1" ]; then
+    info "已按设置跳过 Docker 守护进程日志上限（--tune 可重新开启）"
+  else
+    tune_docker_daemon
+  fi
+  ( cd "$INSTALL_DIR" && docker compose up -d ) \
+    || die "容器启动失败（上方有 docker 的报错；常见：端口被占 / 磁盘已满 / .env 的数据库口令与既有数据卷不一致）"
   ok "容器已启动"
+  docker_post_checks
+}
+
+# rescue_container_data：升级时的数据抢救。
+# 标准 compose 会把 ./data 挂到容器的 /app/data；但旧容器若是手工 docker run 起的、
+# 或来自没写 volumes 的旧 compose，数据就全在容器可写层里——`compose up -d` 一重建
+# 容器，tasks / traffic / 证据 / 会话全部随旧容器消失，而且没有任何报错。
+# 所以重建之前核对一次：挂载不是「bind 到 ./data」就先把数据迁出来。
+rescue_container_data(){
+  local cid src
+  cid="$(cd "$INSTALL_DIR" && docker compose ps -a -q pangu 2>/dev/null | head -1 || true)"
+  [ -n "$cid" ] || return 0
+  docker inspect "$cid" >/dev/null 2>&1 || return 0
+  # Type:Source；没挂载时为空，匿名卷时 Source 是 /var/lib/docker/volumes/<id>/_data
+  src="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Type}}:{{.Source}}{{end}}{{end}}' "$cid" 2>/dev/null || true)"
+  if [ "${src%%:*}" = "bind" ] && same_path "${src#*:}" "$INSTALL_DIR/data"; then return 0; fi
+  warn "旧容器的 /app/data 没有挂载到 $INSTALL_DIR/data：数据在容器层里，容器一重建就丢。重建前先迁出来"
+  # 先停再拷：一边写一边拷拿到的可能是写了一半的文件
+  ( cd "$INSTALL_DIR" && docker compose stop pangu ) >/dev/null 2>&1 || true
+  mkdir -p "$INSTALL_DIR/data"
+  if [ "${src%%:*}" = "bind" ] && [ -n "${src#*:}" ]; then
+    # 挂在别的宿主机路径上（手改过 compose）：从原路径拷过来
+    cp -a "${src#*:}/." "$INSTALL_DIR/data/" || die "数据迁移失败，已中止（旧容器保留着，数据未丢）"
+  else
+    docker cp "$cid:/app/data/." "$INSTALL_DIR/data/" || die "数据抢救失败，已中止（旧容器保留着，数据未丢）"
+  fi
+  ok "已把旧容器数据迁移到 $INSTALL_DIR/data（$(du -sh "$INSTALL_DIR/data" 2>/dev/null | cut -f1)）——之后重建容器不再丢数据"
+}
+
+# docker_post_checks：启动后的核对——「以为挂上了」和「真的挂上了」要靠 inspect 验。
+docker_post_checks(){
+  local cid src old
+  # 悬空镜像（<none>：被新版本顶掉的同名层，已无容器引用），纯占磁盘
+  docker image prune -f >/dev/null 2>&1 || true
+  # 旧版本镜像留着给回滚，只列不删（保留「当前 + 上一个」是部署手册的口径）
+  old="$(docker images --format '{{.Repository}}:{{.Tag}}  {{.Size}}' 2>/dev/null | grep -i '/pangu:' | grep -v ":$VERSION " || true)"
+  if [ -n "$old" ]; then
+    info "本机还有旧版本镜像（留给回滚；确认不回滚后 docker rmi <tag> 回收磁盘）："
+    printf '%s\n' "$old" | sed 's/^/    /'
+  fi
+  cid="$(cd "$INSTALL_DIR" && docker compose ps -q pangu 2>/dev/null | head -1 || true)"
+  src="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Source}}{{end}}{{end}}' "$cid" 2>/dev/null || true)"
+  if [ -n "$src" ] && same_path "$src" "$INSTALL_DIR/data"; then
+    ok "数据已落在宿主机 $INSTALL_DIR/data（容器重建不丢；备份 / 迁移直接拷这个目录）"
+  else
+    warn "容器的 /app/data 没有挂到 $INSTALL_DIR/data：数据在容器层里，重建容器会丢——请把 docker inspect $cid --format '{{json .Mounts}}' 的输出发给维护者"
+  fi
 }
 
 # ── 域名反代：自动安装并配置 Caddy（PROXY_MODE=caddy，两种形态通用）──
@@ -1596,6 +2492,11 @@ install_browser_mcp(){
   fi
 }
 
+# ── 宿主机调优（swap / 内核参数 / 系统日志上限）────
+# 放在部署之前：这些是「服务起来时就该是对的」参数；Docker 守护进程的日志上限
+# 属于 docker 形态自己的流程（要在 compose up 之前重启守护进程），在 deploy_docker 里做。
+tune_host
+
 # ── 执行部署 ─────────────────────────────────────
 case "$MODE" in
   binary) deploy_binary ;;
@@ -1650,7 +2551,11 @@ fi
 if [ -n "$DOMAIN" ] && [ "$PROXY_MODE" = "caddy" ]; then
   install_caddy
 fi
-for _n in $(seq 1 30); do
+# 等待上限：二进制 60 秒；Docker 首次启动要解压 3.66G 镜像、起数据库、跑迁移，
+# 慢盘 / 低配机器上 60 秒不够——给 3 分钟，免得服务其实起来了却报「未就绪」。
+_tries=30; _wait_desc="60s"
+if [ "$MODE" = "docker" ]; then _tries=90; _wait_desc="3 分钟"; fi
+for _n in $(seq 1 "$_tries"); do
   # 每轮失败打进度：装机现场「卡在哪一步」必须可见，也方便排障
   # curl 的退出码显式捕获：set -e 下 if 条件本应豁免，但显式 rc 让「为什么退出」
   # 直接可见（曾在此处出现无输出退出的怪象，靠这行定位）
@@ -1691,21 +2596,29 @@ for _n in $(seq 1 30); do
     else
       ( cd "$INSTALL_DIR" && docker compose ps )
     fi
+    # 服务确认健康之后才装备份定时器、出体检报告：装到一半失败的现场不需要这些。
+    install_backup
+    if [ "$IS_MAC" != "1" ]; then
+      printf '\n── 装后体检 ──\n'
+      host_report
+    fi
+    security_report
+    info "随时可重跑 sudo ./install.sh --doctor 复查上面这些项（只读，不改任何东西）"
     exit 0
   fi
-  info "等待服务就绪 (${_n}/30)..."
+  info "等待服务就绪 (${_n}/${_tries})..."
   sleep 2
 done
 if [ "$MODE" = "binary" ]; then
   if [ "$IS_MAC" = "1" ]; then
-    warn "60s 内未就绪，查看日志: tail -n 50 $INSTALL_DIR/pangu.launchd.log"
+    warn "${_wait_desc}内未就绪，查看日志: tail -n 50 $INSTALL_DIR/pangu.launchd.log"
   else
-    warn "60s 内未就绪，查看日志: journalctl -u $SERVICE -n 50"
+    warn "${_wait_desc}内未就绪，查看日志: journalctl -u $SERVICE -n 50"
   fi
 else
-  warn "60s 内未就绪——自动诊断："
+  warn "${_wait_desc}内未就绪——自动诊断："
   ( cd "$INSTALL_DIR" && docker compose ps ) || true
   ( cd "$INSTALL_DIR" && docker compose logs --tail 30 ) 2>/dev/null || true
-  warn "常见原因：①.env 的 POSTGRES_PASSWORD 与既有 postgres 数据卷不匹配（pangu 日志见 'password authentication failed'）——把初始化数据卷时的旧密码填回 .env 后 docker compose up -d；②镜像拉取不完整——docker compose pull 后重启；③端口被占用——改 .env 的 PANGU_UI_PORT"
+  warn "常见原因：①.env 的 POSTGRES_PASSWORD 与既有 postgres 数据卷不匹配（pangu 日志见 'password authentication failed'）——把初始化数据卷时的旧密码填回 .env 后 docker compose up -d；②镜像拉取不完整——docker compose pull 后重启；③端口被占用——改 .env 的 PANGU_UI_PORT；④内存不足被 OOM 杀——docker inspect pangu 查 OOMKilled，必要时升内存"
 fi
 exit 1

@@ -10,6 +10,13 @@
 # 验证范围：提问序列正确 → 域名归一化生效 → 自动 Caddy 配置 → binary 全链路
 # （apt PostgreSQL → config.json → systemd → health 200）→ systemd 单元带域名
 # 形态变量（cookie Secure=1 + 受信代理）→ Caddyfile 域名块 → 幂等重跑。
+#
+# 宿主机调优 / 备份 / 体检（smoke 与 smoke-docker 两个 job 都验）：swap、内核参数、
+# 日志上限、升级前库备份、每日备份定时器、--doctor 只读体检。Docker 形态另验：
+# 数据真的挂到宿主机、容器日志上限、守护进程 daemon.json 合并。
+#
+# 注意喂答序列：新增的「仍然继续？」只在有未终态任务时才出现，全新 runner 上为 0 个，
+# 不改变下面的 4 个回答。
 
 name: linux-install-smoke
 
@@ -77,6 +84,26 @@ jobs:
           grep -q "^www.example.com {" /etc/caddy/Caddyfile || { echo "Caddyfile 缺域名块"; cat /etc/caddy/Caddyfile; exit 1; }
           echo "domain-mode env OK"
 
+      - name: Verify host tuning / backup (installed on first run)
+        run: |
+          grep -q "内核参数已调优" /tmp/install.log || { echo "内核参数未调优"; grep -n "内核参数" /tmp/install.log; exit 1; }
+          grep -q "journald）总量上限" /tmp/install.log
+          grep -q "自动备份已启用" /tmp/install.log
+          grep -q "装后体检" /tmp/install.log
+          # 调优要落盘（重启后仍在），不是只在运行期 sysctl -w 一下
+          test -f /etc/sysctl.d/99-pangu.conf || { echo "缺 sysctl.d/99-pangu.conf"; exit 1; }
+          grep -q "^fs.file-max = 2097152" /etc/sysctl.d/99-pangu.conf || { cat /etc/sysctl.d/99-pangu.conf; exit 1; }
+          [ "$(sysctl -n fs.file-max)" -ge 2097152 ]
+          test -f /etc/systemd/journald.conf.d/99-pangu.conf
+          # 无 swap 的机器上应自动建出来（runner 本身没有 swap）
+          awk '/SwapTotal/{print $2}' /proc/meminfo | grep -qv '^0$' || { echo "swap 未创建"; exit 1; }
+          grep -q '^/swapfile' /etc/fstab || { echo "fstab 缺 swap（重启即丢）"; exit 1; }
+          # 句柄上限进单元文件；备份定时器已启用
+          grep -q "^LimitNOFILE=65535" /etc/systemd/system/pangu.service
+          systemctl is-enabled pangu-backup.timer >/dev/null || { echo "备份定时器未启用"; exit 1; }
+          [ -x /opt/pangu/backup.sh ] || { echo "缺 backup.sh"; exit 1; }
+          echo "host tuning / backup OK (swap=$(awk '/SwapTotal/{print int($2/1024)}' /proc/meminfo)M)"
+
       - name: Verify service (health / database)
         run: |
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/health)
@@ -96,3 +123,108 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/health)
           [ "$code" = "200" ] || { echo "reinstall health=$code"; exit 1; }
           echo "idempotent re-run OK"
+
+      - name: Verify upgrade guard (pre-upgrade backup) + backup.sh + doctor
+        run: |
+          # 重跑 = 升级：重启服务之前必须先留下数据库备份
+          grep -q "升级前数据库备份:" /tmp/reinstall.log || { echo "重跑时未做升级前备份"; grep -n "备份" /tmp/reinstall.log; exit 1; }
+          # backups/ 是 root 700：通配符要由 root 展开，runner 用户的 shell 展不开
+          n=$(sudo sh -c 'ls -1 /opt/pangu/backups/db-pre-upgrade-*.sql.gz' | wc -l)
+          [ "$n" -ge 1 ] || { echo "backups/ 下没有升级前备份"; exit 1; }
+          sudo sh -c 'gzip -dc /opt/pangu/backups/db-pre-upgrade-*.sql.gz' | grep -q "PostgreSQL database cluster dump" \
+            || { echo "升级前备份不是有效转储"; exit 1; }
+          [ "$(sudo sh -c 'stat -c %a /opt/pangu/backups/db-pre-upgrade-*.sql.gz' | sort -u)" = "600" ]
+          # 调优幂等：重跑不许把 sysctl 配置写出重复行
+          [ "$(grep -c '^fs.file-max' /etc/sysctl.d/99-pangu.conf)" = "1" ] || { cat /etc/sysctl.d/99-pangu.conf; exit 1; }
+          grep -q "无需调整\|已调优" /tmp/reinstall.log
+          # 定时器装的备份脚本本身要能跑、产出有效转储
+          sudo /opt/pangu/backup.sh
+          latest=$(sudo sh -c 'ls -1t /opt/pangu/backups/db-*.sql.gz' | grep -v pre-upgrade | head -1)
+          sudo gzip -dc "$latest" | grep -q "PostgreSQL database cluster dump" || { echo "backup.sh 产出无效"; exit 1; }
+          echo "backup.sh OK -> $latest"
+          # --doctor：只读体检，退出码 0 且看得出健康 / 挂载 / 备份状态
+          sudo -E bash install.sh --doctor > /tmp/doctor.log 2>&1 || { echo "doctor 退出码非 0"; cat /tmp/doctor.log; exit 1; }
+          grep -q "服务健康" /tmp/doctor.log || { echo "doctor 未报告服务健康"; cat /tmp/doctor.log; exit 1; }
+          grep -q "自动备份已启用" /tmp/doctor.log
+          grep -q "内核网络 / 句柄参数在建议值以上" /tmp/doctor.log
+          echo "doctor OK"
+
+  # ── Docker 形态冒烟 ──────────────────────────────────────────────
+  # Docker 是绝大多数正式部署用的形态，此前零 CI 覆盖（v0.1.28 的 MCP 路由冲突那种
+  # 「装起来才知道」的问题就漏在这里）。走 install.sh --mode=docker -y 全流程。
+  smoke-docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve smoke version
+        run: |
+          TAG=""
+          for i in 1 2 3; do
+            TAG="$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
+            [ -n "$TAG" ] && break
+            echo "attempt $i: 解析失败（限流？），30s 后重试"
+            sleep 30
+          done
+          [ -n "$TAG" ] || TAG="v0.1.28"
+          echo "PANGU_SMOKE_VERSION=$TAG" >> "$GITHUB_ENV"
+          echo "smoke version: $TAG"
+
+      - name: Run install.sh (docker mode, non-interactive)
+        run: |
+          set -o pipefail
+          sudo -E bash install.sh --mode=docker -y --version="$PANGU_SMOKE_VERSION" 2>&1 | tee /tmp/install-docker.log
+          grep -q "容器已启动" /tmp/install-docker.log || { echo "── 容器未启动，log tail ──"; tail -60 /tmp/install-docker.log; exit 1; }
+          grep -q "服务已就绪" /tmp/install-docker.log || { echo "── 服务未就绪 ──"; tail -60 /tmp/install-docker.log; sudo -n docker compose -f /opt/pangu/docker-compose.yml logs --tail 40; exit 1; }
+
+      - name: Verify docker runtime safeguards
+        run: |
+          D=/opt/pangu
+          # ① 数据真的挂到宿主机（不是躺在容器可写层里——重建即丢）
+          src=$(sudo docker compose -f "$D/docker-compose.yml" ps -q pangu | head -1)
+          mount=$(sudo docker inspect -f '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Type}}:{{.Source}}{{end}}{{end}}' "$src")
+          echo "data mount: $mount"
+          [ "$mount" = "bind:$D/data" ] || { echo "── /app/data 不是 bind 到 $D/data ──"; sudo docker inspect -f '{{json .Mounts}}' "$src"; exit 1; }
+          # ② 容器日志上限
+          sudo docker inspect -f '{{json .HostConfig.LogConfig.Config}}' "$src" | grep -q 'max-size' || { echo "容器日志无上限"; exit 1; }
+          # ③ 守护进程级日志上限（合并进既有 daemon.json，不是覆盖）
+          test -f /etc/docker/daemon.json && grep -q '"max-size"' /etc/docker/daemon.json || { echo "daemon.json 无 max-size"; cat /etc/docker/daemon.json; exit 1; }
+          sudo docker info >/dev/null 2>&1 || { echo "docker 重启后不可用"; exit 1; }
+          # ④ 资源上限 / 停机宽限 / 健康检查 / 句柄
+          hc=$(sudo docker inspect -f '{{.HostConfig.Memory}} {{.HostConfig.PidsLimit}} {{.Config.StopTimeout}} {{.HostConfig.Ulimits}}' "$src")
+          echo "hostconfig: $hc"
+          mem=$(echo "$hc" | awk '{print $1}'); [ "$mem" -ge 1073741824 ] || { echo "未设内存上限: $hc"; exit 1; }
+          [ "$(echo "$hc" | awk '{print $2}')" = "4096" ] || { echo "未设 pids 上限"; exit 1; }
+          echo "$hc" | grep -q "nofile" || { echo "未设 nofile"; exit 1; }
+          sudo docker inspect -f '{{json .Config.Healthcheck.Test}}' "$src" | grep -q "api/health" || { echo "缺健康检查"; exit 1; }
+          # ⑤ 日志上限真的生效（跑一段时间后 json 文件不会无限长）：此处只验配置已带
+          grep -q "Docker 容器日志上限" /tmp/install-docker.log
+          grep -q "数据已落在宿主机" /tmp/install-docker.log
+          grep -q "自动备份已启用" /tmp/install-docker.log
+          echo "docker runtime safeguards OK"
+
+      - name: Verify health, healthy state, backup, doctor (docker)
+        run: |
+          D=/opt/pangu
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/health)
+          [ "$code" = "200" ] || { echo "health=$code"; exit 1; }
+          # 健康检查：start_period 120s 内应转 healthy
+          for i in $(seq 1 40); do
+            st=$(sudo docker inspect -f '{{.State.Health.Status}}' "$(sudo docker compose -f "$D/docker-compose.yml" ps -q pangu | head -1)")
+            [ "$st" = "healthy" ] && break
+            sleep 5
+          done
+          [ "$st" = "healthy" ] || { echo "容器健康检查状态: $st"; sudo docker inspect -f '{{json .State.Health}}' "$(sudo docker compose -f "$D/docker-compose.yml" ps -q pangu)"; exit 1; }
+          echo "container healthy OK"
+          # 备份脚本（docker 形态：经 compose exec 导出）
+          sudo "$D/backup.sh"
+          latest=$(sudo sh -c "ls -1t $D/backups/db-*.sql.gz" | head -1)
+          sudo gzip -dc "$latest" | grep -q "PostgreSQL database cluster dump" || { echo "docker 备份产出无效"; exit 1; }
+          echo "docker backup OK -> $latest"
+          # --doctor
+          sudo -E bash install.sh --doctor > /tmp/doctor-docker.log 2>&1 || { echo "doctor 退出码非 0"; cat /tmp/doctor-docker.log; exit 1; }
+          grep -q "服务健康" /tmp/doctor-docker.log || { echo "doctor 未报告服务健康"; cat /tmp/doctor-docker.log; exit 1; }
+          grep -q "数据已落在宿主机" /tmp/doctor-docker.log || { cat /tmp/doctor-docker.log; exit 1; }
+          grep -q "容器日志有大小上限" /tmp/doctor-docker.log || { cat /tmp/doctor-docker.log; exit 1; }
+          echo "doctor (docker) OK"

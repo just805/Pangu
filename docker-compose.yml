@@ -13,12 +13,20 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-pangu}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # 并行查询 / 大排序溢出到共享内存，默认 64M 偏小
+    shm_size: 256mb
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pangu} -d ${POSTGRES_DB:-pangu}"]
       interval: 5s
       timeout: 3s
       retries: 10
     restart: unless-stopped
+    # 容器日志只增不减：不封顶迟早写满磁盘（docker system df 还不统计这部分）
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
 
   pangu:
     # 镜像在 GHCR 与 Docker Hub 双源发布；默认走 GHCR（发布工作流必然推送），
@@ -35,6 +43,8 @@ services:
       PANGU_LLM_MODEL: ${PANGU_LLM_MODEL:-}
       PANGU_LLM_BASE_URL: ${PANGU_LLM_BASE_URL:-}
       PANGU_LLM_PROXY: ${PANGU_LLM_PROXY:-}
+      # 时区跟随宿主机（.env 的 TZ，未设则 UTC）：否则任务时间戳 / 报告全是 UTC
+      TZ: ${TZ:-UTC}
     ports:
       - "8787:8787"
       - "127.0.0.1:8788:8788"
@@ -49,6 +59,26 @@ services:
       # 改 skill 无需重建镜像，容器读的就是宿主机这份。
       - ./skills:/app/skills
     restart: unless-stopped
+    # 停机宽限：docker stop 默认 10 秒后 SIGKILL，在跑的 worker 这一步直接断掉
+    stop_grace_period: 60s
+    # 健康检查：start.sh 包装进程活着不等于 pangu 活着（本体反复崩溃时容器状态
+    # 仍是 running）。`docker compose ps` 显示 healthy 才是真的起来了。
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8787/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    # 文件句柄：nuclei/httpx/ffuf 都是句柄大户
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
 
 volumes:
   pgdata:
