@@ -289,7 +289,9 @@ location / {
 ### 7.3 升级与备份
 
 - 页面一键更新：下载 → SHA256 → 冒烟 → 原子换装 → 失败回滚；只换程序不动数据；
-- Docker：`docker compose pull && docker compose up -d`；
+- Docker：`docker compose pull && docker compose up -d`；用 `install.sh` 部署的实例重跑
+  `install.sh` 即升级（重启前自动备份数据库，并顺带做宿主机调优：swap、内核参数、
+  容器日志上限、时区、每日备份定时器，`--doctor` 只读体检）；
 - 数据备份：Linux/macOS 的 compose 把数据绑定在项目根 `./data`，直接
   `tar czf pangu-data.tgz -C ./data .`；Windows compose 使用 named volume
   `pangu-data`（实际名称带 Compose 项目前缀，以 `docker volume ls` 为准），
