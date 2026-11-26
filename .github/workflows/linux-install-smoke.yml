@@ -37,6 +37,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # 静态检查：脚本是 set -euo pipefail，`x="$(... | grep ...)"` 在「找不到」这种
+      # 正常分支上会让整条管道判失败 → set -e 静默退出（v0.1.30 修的就是这个）。
+      # 可选查找一律走 env_get，或显式补 `|| true`。
+      - name: Lint (grep 赋值在 pipefail 下会静默退出)
+        run: |
+          bad=$(grep -nE '="\$\([^)]*grep' install.sh | grep -v '|| *true' | grep -vE '^[0-9]+:[[:space:]]*#' || true)
+          if [ -n "$bad" ]; then
+            echo "以下赋值在「找不到」时会静默掐断安装，改用 env_get 或补 || true："
+            echo "$bad"
+            exit 1
+          fi
+          echo "lint OK"
+
       - name: Resolve smoke version
         run: |
           if [ -n "$PANGU_SMOKE_VERSION" ]; then

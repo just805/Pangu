@@ -262,7 +262,9 @@ swap_mb_now(){ awk '/SwapTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null |
 fs_avail_mb(){
   local p="$1"
   while [ -n "$p" ] && [ ! -d "$p" ]; do p="$(dirname "$p")"; done
-  df -Pm "$p" 2>/dev/null | awk 'NR==2{print $4}'
+  # `|| true`：pipefail 下 df 失败（路径异常 / 特殊文件系统）会让赋值非零，
+  # set -e 直接掐断安装——「查不到空间」应当是「不知道」，不是「装不下去」。
+  df -Pm "$p" 2>/dev/null | awk 'NR==2{print $4}' || true
 }
 
 # same_path A B：两个路径是否指向同一位置（解析不了时按「不同」处理，不猜）。
@@ -281,6 +283,17 @@ env_set(){
   else
     printf '%s=%s\n' "$2" "$3" >> "$1"
   fi
+}
+
+# env_get FILE KEY：读 .env 里的值，键不存在 / 文件不存在都返回空串。
+# **必须永远成功**：本脚本是 set -euo pipefail，用 `x="$(grep -E '^KEY=' f | cut ...)"`
+# 做「可选查找」时，键不存在会让 grep 非零 → pipefail 判定整条管道失败 → set -e 让脚本
+# 静默退出，不留任何提示。这是 v0.1.29 的真实事故：旧 .env 没有 PANGU_UI_PORT，
+# 装到确认完「有任务在跑，仍然继续？」之后直接回到提示符。
+# awk 单遍读、不接管道，天然恒 0；同名键取第一行。
+env_get(){
+  [ -f "$1" ] || return 0
+  awk -v k="$2" 'index($0, k "=")==1 {print substr($0, length(k)+2); exit}' "$1"
 }
 
 # host_timezone：宿主机时区名（如 Asia/Shanghai），识别不出返回空（compose 退回 UTC）。
@@ -832,7 +845,7 @@ run_doctor(){
   printf '  部署形态: %s   安装目录: %s\n' "$mode" "$INSTALL_DIR"
   local port=8787 code cid src old crashes last
   if [ "$mode" = "docker" ]; then
-    port="$(grep -E '^PANGU_UI_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2)"
+    port="$(env_get "$INSTALL_DIR/.env" PANGU_UI_PORT)"
     if [ -z "$port" ]; then port=8787; fi
   else
     port="${LISTEN_ADDR##*:}"
@@ -1840,7 +1853,7 @@ deploy_docker(){
   # 两项提前到拉镜像之前：有任务在跑（用户可能选择中止）或端口被占（必然起不来）
   # 时，不该先让人白等一次 3.66G 的下载。
   warn_running_tasks
-  local _pre_port; _pre_port="$(grep -E '^PANGU_UI_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2)"
+  local _pre_port; _pre_port="$(env_get "$INSTALL_DIR/.env" PANGU_UI_PORT)"
   warn_port_busy "${_pre_port:-8787}" docker-proxy
 
   # skills 要挂进容器：空目录挂载会覆盖镜像内置的 /app/skills，所以先从发行包取一份
@@ -2544,7 +2557,7 @@ PORT="${LISTEN_ADDR##*:}"
 if [ "$MODE" = "docker" ] && [ -f "$INSTALL_DIR/.env" ]; then
   # Docker 形态对外端口可经 .env 的 PANGU_UI_PORT 覆盖（Cloudflare 等 CDN
   # 只转发特定端口，用户会改成 2052 之类）——健康检查必须打映射后的端口。
-  _ui_port="$(grep -E '^PANGU_UI_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2)"
+  _ui_port="$(env_get "$INSTALL_DIR/.env" PANGU_UI_PORT)"
   [ -n "$_ui_port" ] && PORT="$_ui_port"
 fi
 # ── 域名反代（PROXY_MODE=caddy）：服务起来后自动装并配置 ──
