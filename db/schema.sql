@@ -1773,8 +1773,22 @@ CREATE TABLE IF NOT EXISTS api_keys (
     enabled      BOOLEAN NOT NULL DEFAULT true,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_used_at TIMESTAMPTZ,
-    expires_at   TIMESTAMPTZ
+    expires_at   TIMESTAMPTZ,
+    -- 权限范围（2026-11-27 补）：read < write < admin。
+    -- 此前任何 Key 都等同管理员（能装工具、改 LLM 配置、删任务），程序化凭证一旦
+    -- 外泄影响面过大。默认 admin 是刻意的「旧库行为不变」——已发出的 Key 在升级前
+    -- 就是全权，静默降权会打断正在跑的 CI；新建 Key 由 HTTP 层强制显式选择。
+    scope        TEXT NOT NULL DEFAULT 'admin',
+    -- 最近一次调用的来源地址，用于审计「这把 Key 从哪来」。
+    last_used_ip TEXT NOT NULL DEFAULT ''
 );
+
+-- 存量库补列（新库上面建表已带；ADD COLUMN IF NOT EXISTS 对旧库是唯一路径）。
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'admin';
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS last_used_ip TEXT NOT NULL DEFAULT '';
+-- 放宽/收紧 CHECK 不能靠 ADD CONSTRAINT（重名失败）：先删后加，保证可重复执行。
+ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS ck_api_keys_scope;
+ALTER TABLE api_keys ADD CONSTRAINT ck_api_keys_scope CHECK (scope IN ('read','write','admin'));
 
 -- ── 漏洞字段 schema 化（M-11，2026-11-26）──────────────────────────────
 -- 报告模板要按字段 id 绑定渲染、模型要按 schema 填报，前提是字段本身可定义。
@@ -1839,3 +1853,194 @@ CREATE TABLE IF NOT EXISTS eval_benchmarks (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- =====================================================================
+-- §Y. 代码资产与静态扫描（M-02，2026-11-27）
+-- =====================================================================
+-- 源码是与域名/IP 同等重要的一类资产，此前它不是资产：semgrep/gitleaks/trivy 的结果
+-- 只是 Bash 回显，worker 看过就丢，规划者看不到「这个仓库有多少处可控输入进 sink」。
+--
+-- 为什么不并进 assets 表：assets.type 是六类型枚举，全平台共享（去重键、覆盖统计、
+-- 前端分组都依它）。动它要改三处核心逻辑，而代码资产只需要「能被登记 + 能被锚定」。
+-- 所以独立建表，用 code_asset_anchors 挂到探索图。
+--
+-- 回滚成本：DROP 这三张表即可，不影响任何现有表。
+
+-- 代码资产：一个仓库 / 一个源码包。
+CREATE TABLE IF NOT EXISTS code_assets (
+    id             BIGSERIAL PRIMARY KEY,
+    company_id     BIGINT REFERENCES companies(id) ON DELETE SET NULL,
+    task_id        BIGINT NOT NULL DEFAULT 0,   -- 首次登记的任务（0=全局登记）
+    name           TEXT NOT NULL,               -- 仓库名或包名
+    kind           TEXT NOT NULL DEFAULT 'repo',-- repo | archive
+    location       TEXT NOT NULL DEFAULT '',    -- git URL 或本地路径
+    default_branch TEXT NOT NULL DEFAULT '',
+    language       TEXT NOT NULL DEFAULT '',    -- 主语言（登记时填或从扩展名推断）
+    file_count     INT NOT NULL DEFAULT 0,
+    loc            INT NOT NULL DEFAULT 0,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- 唯一键用表达式索引而不是表内 UNIQUE：company_id 可为 NULL，而 NULL 之间互不相等，
+-- 普通 UNIQUE(company_id,name,kind) 会让「无归属」的同一仓库被反复登记成多行。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_code_assets
+    ON code_assets (COALESCE(company_id, 0), name, kind);
+CREATE INDEX IF NOT EXISTS idx_code_assets_company ON code_assets(company_id);
+CREATE INDEX IF NOT EXISTS idx_code_assets_task    ON code_assets(task_id);
+
+-- 静态扫描结果：SAST（semgrep）/ 密钥（gitleaks）/ 成分（trivy）三种归一。
+CREATE TABLE IF NOT EXISTS code_scan_results (
+    id                BIGSERIAL PRIMARY KEY,
+    code_asset_id     BIGINT NOT NULL REFERENCES code_assets(id) ON DELETE CASCADE,
+    scanner           TEXT NOT NULL,              -- semgrep | gitleaks | trivy
+    rule_id           TEXT NOT NULL DEFAULT '',
+    severity          TEXT NOT NULL DEFAULT '',   -- critical|high|medium|low|info（归一后）
+    file_path         TEXT NOT NULL DEFAULT '',
+    line_start        INT,
+    line_end          INT,
+    snippet           TEXT NOT NULL DEFAULT '',
+    -- 成分分析专用：组件 + 版本 + 生态（P2 接 vulnintel 的 CPE 匹配）
+    package_name      TEXT NOT NULL DEFAULT '',
+    package_version   TEXT NOT NULL DEFAULT '',
+    package_ecosystem TEXT NOT NULL DEFAULT '',
+    -- 去重键：同一资产同扫描器同规则同位置的重复扫描不堆行
+    fingerprint       TEXT NOT NULL DEFAULT '',
+    scanned_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (code_asset_id, fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_code_scan_asset ON code_scan_results(code_asset_id, scanner);
+CREATE INDEX IF NOT EXISTS idx_code_scan_sev   ON code_scan_results(code_asset_id, severity);
+CREATE INDEX IF NOT EXISTS idx_code_scan_pkg   ON code_scan_results(package_name, package_version)
+    WHERE package_name <> '';
+
+-- 代码资产 ↔ 探索图节点的锚点。
+-- 刻意不动 exploration_anchors：那张表的 asset_id 语义是 assets.id，且是覆盖度分子与
+-- 任务删除清理的判定输入；混入另一套 id 空间会静默污染覆盖统计。独立表隔离更安全。
+CREATE TABLE IF NOT EXISTS code_asset_anchors (
+    code_asset_id  BIGINT NOT NULL REFERENCES code_assets(id) ON DELETE CASCADE,
+    exploration_id BIGINT NOT NULL,
+    node_id        BIGINT NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (code_asset_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_code_anchor_exp  ON code_asset_anchors(exploration_id);
+CREATE INDEX IF NOT EXISTS idx_code_anchor_node ON code_asset_anchors(node_id);
+
+-- =====================================================================
+-- §Z. 运行时建表迁入（2026-11-27）
+-- =====================================================================
+-- 以下四张表原先由 server 建 Manager 时在各自代码里 CREATE TABLE IF NOT EXISTS
+-- （db/llm_usage.go、db/commands.go、db/intent_reflections.go、db/task_artifacts.go）。
+--
+-- 为什么必须搬进来：那让「schema.sql 是单一数据源」这句话不成立——
+--   · `psql < schema.sql` 手工初始化会缺这四张表；
+--   · 备份/迁移/文档都以本文件为准，它们成了隐形依赖；
+--   · 启动时的表数在「schema 阶段结束」与「运行稳定态」之间差 4 张（监测页上看着像丢表）。
+--
+-- 这里的建表用**最终形态**（含全部补列）。老库没有这些列，靠代码里保留的
+-- ALTER TABLE ... ADD COLUMN IF NOT EXISTS 补齐——两边都要，删掉任一边都会坏：
+-- 删这边 = 新库手工初始化缺表；删那边 = 老库升不上新列。
+--
+-- ⚠️ 顺序铁律：**建表 → 补列 → 建索引**。
+-- CREATE TABLE IF NOT EXISTS 对已存在的表什么都不做，不会补列；如果索引建在
+-- 一个老库还没有的列上，整个 schema 执行会以 42703 报错、启动失败。
+-- （这不是理论风险：搬运时漏掉中间的 ALTER，删列模拟老库后启动直接
+-- `ERROR: column "finding_id" does not exist`。）
+
+-- Token 计量账本：每次 LLM 调用一行，驱动配置页统计。轻量、始终写（不受录制开关影响）。
+CREATE TABLE IF NOT EXISTS llm_usage (
+    id             BIGSERIAL PRIMARY KEY,
+    ts             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    task_id        TEXT,
+    exploration_id BIGINT,
+    intent_id      BIGINT,
+    worker         TEXT,
+    model          TEXT,
+    profile_name   TEXT,
+    latency_ms     INTEGER,
+    input_tokens   INTEGER NOT NULL DEFAULT 0,
+    output_tokens  INTEGER NOT NULL DEFAULT 0,
+    cache_read     INTEGER NOT NULL DEFAULT 0,
+    cache_write    INTEGER NOT NULL DEFAULT 0,
+    status         TEXT
+);
+-- 老库补列（顺序铁律见本节开头：必须在建索引之前）
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS intent_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
+
+-- LLM 请求重迹（受 llm_record 开关控制）：解码后的请求/响应 + 原始 wire 报文。
+-- 网关问题只有 wire 字节是 ground truth，所以 raw_* 两列不能省。
+CREATE TABLE IF NOT EXISTS llm_records (
+    id            BIGSERIAL PRIMARY KEY,
+    ts            TIMESTAMPTZ DEFAULT now(),
+    model         TEXT,
+    profile_name  TEXT,
+    session_id    TEXT,
+    task_id       TEXT,
+    worker        TEXT,
+    latency_ms    INTEGER,
+    input_tokens  INTEGER,
+    output_tokens INTEGER,
+    cache_read    INTEGER,
+    cache_write   INTEGER,
+    status        TEXT,
+    error         TEXT,
+    request_body  TEXT,
+    response_body TEXT,
+    raw_request   TEXT,
+    raw_response  TEXT
+);
+-- 老库补列（顺序铁律见本节开头）
+ALTER TABLE llm_records ADD COLUMN IF NOT EXISTS task_id TEXT;
+ALTER TABLE llm_records ADD COLUMN IF NOT EXISTS worker TEXT;
+ALTER TABLE llm_records ADD COLUMN IF NOT EXISTS profile_name TEXT;
+ALTER TABLE llm_records ADD COLUMN IF NOT EXISTS raw_request TEXT;
+ALTER TABLE llm_records ADD COLUMN IF NOT EXISTS raw_response TEXT;
+CREATE INDEX IF NOT EXISTS idx_llm_records_ts      ON llm_records(ts);
+CREATE INDEX IF NOT EXISTS idx_llm_records_session ON llm_records(session_id);
+
+-- 终态意图经验：同维度历史收场注入 planner/worker，避免原样重跑。
+CREATE TABLE IF NOT EXISTS intent_reflections (
+    intent_id      BIGINT PRIMARY KEY,
+    exploration_id BIGINT NOT NULL,
+    dimension      TEXT NOT NULL DEFAULT '',
+    terminal_state TEXT NOT NULL,
+    stop_reason    TEXT,
+    summary        TEXT,
+    yields         INT NOT NULL DEFAULT 0,
+    assets         BIGINT[],
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_intent_reflections_exp ON intent_reflections(exploration_id);
+CREATE INDEX IF NOT EXISTS idx_intent_reflections_dim ON intent_reflections(exploration_id, dimension);
+
+-- 任务附件（截图/数据样本/日志）：随报告导出证据包，Markdown 用 artifact:<id> 引用。
+-- preview_* 是 docpreview 的渲染状态（Office/PDF 取样成图）。
+CREATE TABLE IF NOT EXISTS task_artifacts (
+    id            BIGSERIAL PRIMARY KEY,
+    task_id       TEXT NOT NULL,
+    finding_id    BIGINT,
+    name          TEXT NOT NULL,
+    kind          TEXT NOT NULL DEFAULT 'other',
+    mime          TEXT,
+    size_bytes    BIGINT NOT NULL DEFAULT 0,
+    sha256        TEXT,
+    source_url    TEXT,
+    note          TEXT,
+    storage_path  TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    preview_state TEXT,
+    preview_pages INT NOT NULL DEFAULT 0,
+    preview_error TEXT,
+    previewed_at  TIMESTAMPTZ
+);
+-- 老库补列（顺序铁律见本节开头）：下面的 finding 索引依赖 finding_id，必须先补列。
+ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS finding_id BIGINT;
+ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS preview_state TEXT;
+ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS preview_pages INT NOT NULL DEFAULT 0;
+ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS preview_error TEXT;
+ALTER TABLE task_artifacts ADD COLUMN IF NOT EXISTS previewed_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_task_artifacts_task    ON task_artifacts(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_artifacts_finding ON task_artifacts(finding_id);

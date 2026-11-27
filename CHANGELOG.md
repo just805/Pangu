@@ -4,6 +4,174 @@
 
 ## [Unreleased]
 
+### 安全（API Key 权限范围，M-12 收尾）
+- **API Key 不再一律等同管理员**：新增 `scope` 三档 `read < write < admin`
+  （`db/api_keys.scope`）。此前任何一把 Key 都能装宿主工具（任意包安装）、改自定义
+  工具（任意代码执行）、改 LLM 通道配置、一键更新。现在按「首段路径 + 请求方法」
+  判定所需档位：`/api/llm` 是配置（admin）、`/api/llm-records` 是只读记录（read）；
+  非 GET 至少 write。判定函数 `requiredAPIKeyScope` 有单测钉住。
+- **admin 档需显式确认**：创建时 `confirm_admin=true` 才允许，前端弹二次确认框。
+  存量 Key 迁移为 `admin`（旧库行为不变，不打断已在跑的 CI）；新建 Key 必须显式选档。
+- **`requireAuth` 的免鉴权白名单收紧**：`/api/auth/` 前缀豁免改为精确名单
+  （status/init/login/logout/health）。此前 `change-password`、`revoke-all-sessions`、
+  `revoke-current` 也在豁免内——一把 read 档 Key 就能吊销管理员全部会话。
+- **调用审计**：`last_used_ip` 记录调用来源，列表页可见。
+
+### 新增（MCP 服务端出口补齐，M-13 收尾）
+- 只读工具从 3 个扩到 8 个：新增 `get_task`（目标/状态/资产计数）、`list_assets`
+  （按任务或类型查资产图）、`search_traffic` / `get_traffic`（流量检索与原文，
+  单段 32KB 截断）、`search_vulns`（组件+版本或 CVE 号查情报与 PoC）。
+- 保持只读边界：建任务/重跑/取消仍不暴露，写操作走开放 API 并受 scope 约束。
+
+### 新增（合规核查进报告，M-09 收尾）
+- Word 报告与 Markdown 预览同时新增「七、合规基线核查」章：按基线分组给四态统计
+  （符合/不符合/不适用/未核查）与逐项证据表。Word 与预览共用 `complianceCounts` /
+  `complianceDetail`，口径不会漂移。
+- 无核查记录的任务不出该章（历史任务不受影响）；「未核查」绝不显示成「符合」。
+
+### 修复（周期调度重启后叠加执行）
+- `runDueSchedules` 原来只查内存里的任务状态；进程重启后内存为空，会把「上一轮
+  仍在跑」误判成「已结束」，第一个 tick 就再起一个任务、与上一轮叠加打同一目标。
+  现在回落数据库 `GetTask` 取状态（`scheduleLastTaskStatus`）。
+- 补两条守门测试：`scheduleShouldDefer` 的终态/非终态判定；源码扫描确保
+  `schedules.go` 不出现任何复测标识符（「复测纯手动」是决策红线，破坏它不会报错）。
+
+### 新增（M-16 PoC 预验证沙箱：P0 验证 + P1 实现）
+- **P0 拓扑验证通过**（这一条决定整个模块生死）：容器 → 宿主 MITM → 录制 的路径成立。
+  实测结论已写进设计稿：MITM **必须绑 `0.0.0.0`**（绑 127.0.0.1 时容器不可达）；
+  目标地址由**代理侧（宿主）**解析，所以容器里写 `http://127.0.0.1:host_port` 能打到
+  端口映射的仿真应用；`host.docker.internal` 作目标不可用（代理侧解析不了 → 502，且不进录制）。
+- **P1 实现**：`sandbox/` 包（docker CLI 封装 + 镜像白名单 + 资源限额 + 指纹→镜像映射）
+  + `poc_prevalidate` 工具。解决的核心痛点：worker 写完 PoC 直接打生产目标，失败就换
+  payload，无从分辨「PoC 写错了」还是「目标没这个漏洞」。
+- **与设计稿的一处刻意偏离**：首期用 `--network none`（沙箱不出网），而不是「出口走平台
+  代理并录制」。沙箱验证打的是容器内 127.0.0.1，本来没有真目标流量可录；给网络出口
+  等于给了跳板能力（用沙箱打未授权目标），风险远大于收益。真目标流量仍在后续照常录制。
+- **实测又抓到一个会导致错误负结论的坑**：`docker run --entrypoint sh` 会覆盖镜像自带
+  的启动命令，容器里没有任何服务在监听，PoC 只会拿到 `Connection refused`——看起来像
+  「PoC 不成立」。现在 `Run` 会按镜像类型先 bootstrap 服务（nginx/httpd/php/redis），
+  起不来就明确报错，绝不给假结论。
+- **映射不到就失败，不猜**：只支持 nginx / apache(httpd) / php / redis；mysql 因需初始化
+  数据目录而明确拒绝。随便起个近似镜像跑，会产出错误的「不可复现」结论，比不做更糟。
+- 镜像白名单（官方基础镜像 + 禁止 `/`）+ `--memory 512m --cpus 1 --pids-limit 128`，
+  同时挡住「用沙箱当跳板」与「失控 PoC 打垮宿主」。
+
+### 新增（M-02 代码资产与静态扫描，第一刀）
+- **源码第一次成为一等资产**。此前 semgrep / gitleaks / trivy 的结果只是 Bash 回显，
+  worker 看过就丢，规划者看不到「这个仓库有多少处可控输入进 sink」，也就派不出
+  「去动态验证这个 sink」的意图。
+- 表（`schema.sql` §Y，三张，回滚只需 DROP）：
+  - `code_assets`：仓库/源码包，按企业归属。唯一键用**表达式索引**
+    `(COALESCE(company_id,0), name, kind)`——普通 UNIQUE 在 company_id 为 NULL 时失效，
+    同一仓库会被反复登记成多行。
+  - `code_scan_results`：三种扫描器归一后的结果，`UNIQUE(code_asset_id, fingerprint)` 去重。
+  - `code_asset_anchors`：挂到探索图节点。**刻意不动 `exploration_anchors`**——那张表的
+    asset_id 语义是 `assets.id`，且是覆盖度分子与任务删除清理的判定输入，混入另一套
+    id 空间会静默污染覆盖统计。
+- 四个工具：`code_asset_register`（写）/ `code_scan_plan`（读，只给命令）/
+  `code_scan_ingest`（写，只认扫描器写出的 JSON）/ `code_asset_context`（读，动态→源码反查）。
+  已注册进三张清单，`BuiltinToolSeeds` 自动收录。
+- **凭据卫生**：gitleaks 的 `Secret` 是明文密钥，入库时只保留前 4 位 + 长度并标注
+  「已脱敏」——库里存密钥等于把泄露面从目标仓库扩大到平台数据库/报告/备份。
+- **规模治理**：单次入库上限 2000 行，且 critical/high 全留、其余每规则最多 3 条样本；
+  返回里如实报折叠条数。不做这一步，一个中型仓库一轮 semgrep 就能写进数万条 medium/low，
+  之后任何按资产的查询都退化成全表扫。
+- **反查隔离**：查询一个没登记归属的 URL 时，只看 `company_id IS NULL` 的全局仓库，
+  不返回其他企业的源码清单。
+- 技能 `source-code-hunting` 补「平台工具映射」一节（不新建技能）。
+
+### 新增（M-02 第二刀：成分分析 → 情报库、报告章节）
+- **成分分析接上公开情报**：`code_scan_ingest` 处理 trivy 结果时，入库后立刻把
+  「组件 + 版本」送进 `vulnintel` 检索，返回命中的 CVE（含 `version_in_range` 判定）。
+  此前 trivy 只能列出组件与版本，回答不了「这个版本命中了哪些 CVE」。
+- 设计稿 §8 的待确认项（「CPE 匹配能否接受生态名」）实测结论：**不需要额外的生态映射层**。
+  GHSA 同步（`vulnintel` 的 `ghsaIndexRows`）已经按包名往 `vuln_cpe_products` 写了多行
+  索引——裸包名、`vendor/package` 全名、连字符去重形态、以及 vendor 段兜底都在。
+  所以桥只需把包名当 product 传。
+- 一个容易写错的点已固化在注释里：**不要把 ecosystem 当 vendor 传**。vendor 参数是
+  包含匹配过滤器，npm 包的 vendor 常为空，传 `npm` 会把命中全部过滤掉。
+- **报告新增「八、静态扫描线索」章**（Word + Markdown 同源，模板开关 `code_scan`）：
+  按仓库聚合扫描分布、列前 3 条高危位置。措辞明确「线索不是结论，不计入漏洞统计」——
+  SAST 误报率高，若与已确认漏洞并列，读者会把「疑似」读成「已证实」。
+  只有登记并扫描过源码的任务才出章，历史任务不受影响。
+
+### 修复（四张表 DDL 归一到 schema.sql，恢复「单一数据源」）
+- `llm_usage` / `llm_records` / `intent_reflections` / `task_artifacts` 四张表的 DDL
+  原先只在代码里（server 建 Manager 时 `CREATE TABLE IF NOT EXISTS`），导致
+  `psql < schema.sql` 手工初始化缺表、备份/迁移/文档失真、启动表数在「schema 阶段」
+  与「运行稳定态」之间差 4。现已全部搬进 `schema.sql` §Z（用最终形态，含全部补列）。
+- **搬运时踩到并修掉一个真实回归**：`CREATE TABLE IF NOT EXISTS` 对已存在的表不做任何
+  事，不会补列；而索引若建在老库还没有的列上，整个 schema 执行会以 `42703` 报错、
+  启动直接失败。用「删列模拟老库」复现：
+  `open stores: apply schema: ERROR: column "finding_id" does not exist`。
+  修法是恢复原代码里的**建表 → 补列 → 建索引**三段式顺序，并把这条铁律写进注释。
+- 代码里的 `Ensure*Table` 保留为幂等兜底（测试直接构造 DB、老库补列都需要），
+  注释改为指向 schema.sql 为权威来源，避免下次改列只改一处。
+- 新增两条守门测试（`db/schema_drift_test.go`）：① schema.sql 必须覆盖这四张表与关键
+  补列；② 任何「索引依赖补列」的组合，补列必须出现在建索引之前——顺序反了在新库上完全
+  看不出来，只会在老库升级时炸。已用「把 finding_id 的 ALTER 挪到索引之后」验证会红。
+- 验证方式（真库）：清库首次启动 → 一次建齐 75 张；删掉 4 张表再启动 → 重建 4 张
+  （`新增 4 张表，现有 75 张`）；删掉新列再启动 → 全部补回且启动成功。
+
+### 新增（schema 应用可见化，不做版本哨兵）
+- 启动日志与监测页新增 schema 观测：**新增表数、现有表数、schema 执行耗时、schema.sql 行数**。
+  schema.sql 每次启动全文 Exec 且全靠幂等（1856 行 / 71 表建表 + 4 张代码建表），
+  此前完全看不见它跑了多久、有没有真的建表——「启动慢」和「迁移没生效」都只能靠猜。
+- **实测数据决定不做「版本哨兵分段执行」**：空库首次 2926ms（其中 schema 约 1.37s）、
+  已有库启动 697ms（其中幂等检查约 42ms）。分段能省的只有那 42ms，代价是改造最危险的
+  迁移执行机制——不值得。多实例并发启动的 DDL 抢锁问题也已由 advisory lock 解决。
+- 顺带发现并记录：`llm_usage` / `llm_records` / `task_artifacts` / `intent_reflections`
+  四张表的 DDL 不在 schema.sql 里，而是 server 建 Manager 时由各自代码建的。这导致
+  「schema 阶段结束」与「运行稳定态」的表数差 4，监测页取实时值消除误导。
+  （已于同版本归一到 schema.sql，见下节。）
+
+### 新增（系统监测页：「进程现在健康吗」）
+- 新端点 `GET /api/system/monitor` + 页面 `/system/monitor`，补上平台此前完全缺失的
+  **运行时视角**（原有观测都是业务视角：任务/发现/Token/日志文本）。全仓此前没有任何
+  `runtime.NumGoroutine()` / `runtime.ReadMemStats()`。
+- 四块内容：**进程**（goroutine、堆、GC、uptime）、**存储**（连接池 open/in_use/idle/
+  wait_count，池打满的直接证据）、**引擎实时**（逐任务 inflight、活跃 LLM 调用、规划轮次、
+  activity 丢弃数；全局排队/暂停/终态计数与 SSE 订阅者）、**依赖**（流量录制、到期计划、
+  LLM 就绪）。
+- **告警是「数字 + 处置建议」**，规则保守（goroutine > 800、连接池等待 > 0、activity 丢弃
+  > 0、排队且 LLM 未就绪、**运行中但 LLM 未就绪**、流量未启用）：只在有明确下一步时才
+  提示，不制造噪音。
+- 最后一条来自实机验证：任务 `status=running` 但 `inflight=0`、`planner_round=0`——表面
+  在跑、实际一轮都没执行，此前没有任何地方会点出来。
+- `warnings` 返回空数组而非 `null`（nil 切片会被序列化成 null，前端要额外兜底）。
+- 只读：不新增表、不写库、不起后台协程，每次请求现算；前端 5s 轮询且标签页不可见时暂停。
+  走 `admin` scope，复用 M-12 的 API Key 权限判定。
+
+### 实验（态势增量注入，默认关）
+- `planner_incremental_situation`（settings，默认 false）：开启后，上一轮已注入的
+  态势条目只保留结构与 id、长正文截断为「…（已见）」，新增条目仍全量；体积无收益
+  时自动退回全量。长任务每轮全量注入近百 KB 态势是最大的一笔固定开销，但压缩策略
+  需实测校准，故默认关。
+
+### 修复（Windows 上 `diff_responses` / `api_contract` 的 URL 模式必然失败）
+- 两条工具此前把 `python3` 硬编码进生成的命令。Windows 官方安装器只提供
+  `python.exe`，没有 `python3.exe`——命令一跑就是 `exit status 9009`（命令不存在），
+  对使用者是零信息量的死路。
+- 新增 `pythonInterpreter()`（`agent/python.go`）：按 `python3` → `python` 顺序探测，
+  且**真跑一次 `-c` 验版本**——Windows 10+ 的 `python` 可能只是应用商店的应用执行
+  别名，LookPath 能命中、执行却失败。结果用 `sync.OnceValue` 缓存，只付一次成本。
+- 缺解释器时不再生成注定失败的命令，改为返回带替代路径的提示（`diff_responses`
+  引导走纯 Go 的文件模式；`api_contract` 引导走 katana / `http_request` + jq）。
+- **同一缺陷也存在于自定义 Python 工具**：`server/customtool.go` 的 `detectPython`
+  只做 LookPath，先命中 `python3.exe` 别名就返回它——结果是自定义 Python 工具
+  在本机全部执行失败（`exit status 9009`）。现在同样跑一次版本检查再认。
+
+### 测试（补两类守门，去掉环境性假失败）
+- **工具注册守门**（`agent/tool_registration_test.go`）：扫描所有
+  `func (t *ToolSet) xxx() actool.CoreTool` 构造器（自动排除单行转发器），要求每个
+  都在 `PlannerTools / WorkerTools / MainAgentTools` 三张清单中被调用过。这条覆盖
+  AGENTS.md §4 反复踩的「实现了没注册」（listener v0.3.87、list_worker_traces
+  v0.3.89）——那类遗漏不报错、单测也发现不了，只表现为「明明实现了却从不用」。
+  已用「临时摘掉 listArtifacts」验证测试确实会红。
+- **脚本测试的环境判定**：`pythonCommand` 改用生产同款探测（真验版本），
+  `bash` 探测后先跑一条 trivial 命令确认可用（Windows 上 `bash.exe` 常是 WSL
+  转发器）。此前本机 7 条测试因缺 python3/bash 报假失败，会掩盖真回归。
+
 ## [0.1.31] - 2026-11-26
 
 ### 修复（install.sh 再次静默中断：Docker 形态卡在备份之后）

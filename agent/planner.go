@@ -56,6 +56,15 @@ type Planner struct {
 	// dispatch it step-by-step over rounds instead of front-loading it in parallel.
 	todoMu sync.Mutex
 	todos  map[int64]*actool.TodoStore
+
+	// incrementalSituation 是「态势增量注入」开关（默认关）：开启后，上一轮已经
+	// 注入过的列表项只保留结构与 id、压缩正文，新条目仍全量。长任务每轮全量
+	// 注入 96KB 态势是最大的一笔固定开销，但压缩策略必须用实测数据校准，
+	// 所以默认关、可经 settings 打开观察。
+	incrementalSituation func() bool
+	// situationSeen 记录每个探索上一轮注入过的条目 id（list key → id 集合）。
+	situationMu   sync.Mutex
+	situationSeen map[int64]map[string]map[int64]bool
 }
 
 func NewPlanner(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int) *Planner {
@@ -350,6 +359,127 @@ func truncOutput(s string, n int) string {
 // 事件足够的余量。
 const plannerSituationalBudget = 96 * 1024
 
+// SetIncrementalSituation 注入「态势增量注入」开关（nil / 返回 false = 关闭）。
+func (p *Planner) SetIncrementalSituation(fn func() bool) { p.incrementalSituation = fn }
+
+const (
+	// plannerIncrementalMinBytes：态势小于这个体积时不做增量——小任务省不下多少，
+	// 却多了「模型得自己查回」的麻烦。
+	plannerIncrementalMinBytes = 24 * 1024
+	// plannerSeenTextCap：已见条目单个文本字段保留的字符数。
+	plannerSeenTextCap = 120
+	// situationMemoTasks：memo 最多保留多少个探索。超了整体重置（下一轮全量），
+	// 避免长期运行的进程为已删任务攒内存。
+	situationMemoTasks = 200
+)
+
+// situationHeavyLists 是「只增不减、正文最重」的态势列表，也是增量压缩的对象。
+// 骨架字段（goals/frontier/counts/coverage/stall/guard_attributions）永不压缩——
+// planner 的判定依赖它们，压缩它们的风险远大于省下的 token。
+var situationHeavyLists = []string{"recent_facts", "recent_done_intents", "finding_list", "cold_digests"}
+
+// renderSituation 渲染本轮态势：默认全量（renderGraphOverview），开关打开且
+// 体积够大时走增量——上一轮已注入的条目只留结构 + 截断正文，本轮新增的照常全量。
+//
+// 为什么默认关：压缩策略的正确性只能用真实任务的规划质量来验证，猜错了会让
+// planner 基于残缺信息派单。先作为可观测的开关存在，用实测数据校准后再议默认值。
+func (p *Planner) renderSituation(expID int64, data map[string]any) string {
+	full, err := json.Marshal(data)
+	if err != nil {
+		return renderGraphOverview(data)
+	}
+	enabled := p.incrementalSituation != nil && p.incrementalSituation()
+	if !enabled || expID <= 0 || len(full) < plannerIncrementalMinBytes {
+		return renderGraphOverview(data)
+	}
+
+	// graphOverviewData 里的列表是 []map[string]any，而增量处理要按 []any 遍历；
+	// 借一次 json 往返拿到通用形态（本来就要 marshal，多这一次只在开关打开时发生）。
+	var generic map[string]any
+	if err := json.Unmarshal(full, &generic); err != nil {
+		return renderGraphOverview(data)
+	}
+
+	p.situationMu.Lock()
+	if p.situationSeen == nil || len(p.situationSeen) > situationMemoTasks {
+		p.situationSeen = map[int64]map[string]map[int64]bool{}
+	}
+	prev := p.situationSeen[expID]
+	next := map[string]map[int64]bool{}
+	compactedAny := false
+	for _, key := range situationHeavyLists {
+		items, ok := generic[key].([]any)
+		if !ok {
+			continue
+		}
+		ids := make(map[int64]bool, len(items))
+		out := make([]any, 0, len(items))
+		for _, it := range items {
+			m, ok := it.(map[string]any)
+			if !ok {
+				out = append(out, it)
+				continue
+			}
+			id := situationID(m)
+			if id > 0 {
+				ids[id] = true
+			}
+			if id > 0 && prev[key][id] {
+				out = append(out, compactSeenItem(m))
+				compactedAny = true
+				continue
+			}
+			out = append(out, m)
+		}
+		generic[key] = out
+		next[key] = ids
+	}
+	p.situationSeen[expID] = next
+	p.situationMu.Unlock()
+
+	if !compactedAny {
+		return renderGraphOverview(data)
+	}
+	b, err := json.Marshal(generic)
+	if err != nil || len(b) >= len(full) {
+		// 压不动或反而更大：退回全量，别让「优化」变成负优化。
+		return renderGraphOverview(data)
+	}
+	return "\n\n【本轮态势（graph_overview 预取·增量模式）】：\n" + string(b) +
+		"\n\n【增量说明】带「…（已见）」的条目是上一轮已注入、原文未变的内容（结构与 id 完整）；" +
+		"需要细节用 node_detail / expand_digest / list_facts 按需查回，勿凭记忆脑补。"
+}
+
+// situationID 从条目里取 id（json 往返后数字是 float64）。
+func situationID(m map[string]any) int64 {
+	switch v := m["id"].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	}
+	return 0
+}
+
+// compactSeenItem 压缩一条已见条目：保留全部字段与 id，只把长文本截断并标注。
+func compactSeenItem(m map[string]any) map[string]any {
+	cp := maps.Clone(m)
+	for k, v := range cp {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		r := []rune(s)
+		if len(r) <= plannerSeenTextCap {
+			continue
+		}
+		cp[k] = string(r[:plannerSeenTextCap]) + "…（已见）"
+	}
+	return cp
+}
+
 // renderGraphOverview folds the pre-computed graph_overview snapshot into the
 // wake-up prompt so the planner starts each round with the full situation in
 // hand — saving the round-trip it would otherwise spend calling the tool. It is
@@ -540,7 +670,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 关键态势（刚完成的意图 + 预取的完整图）改放【本轮 user 输入】(见下方 input)，system
 	// 只留静态规划正文。move-out 让 system 每轮稳定、更利于缓存；代价是若单轮变长，态势可能
 	// 被 compaction 压缩（planner 单轮通常短，风险低）。situational 会拼进下方 input。
-	situational := renderTriggers(ts, triggers) + renderGraphOverview(tsx.graphOverviewData())
+	situational := renderTriggers(ts, triggers) + p.renderSituation(ts.ID(), tsx.graphOverviewData())
 	// 积压治理（v0.4.68）：把排太久/前提疑似失效的 open 意图摆到本轮输入，要求裁决。
 	// 只提示不自动杀——退役要由模型写原因，保留可追溯性。
 	situational += renderBacklogHygiene(ts)

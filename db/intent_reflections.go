@@ -22,6 +22,9 @@ type IntentReflection struct {
 }
 
 // EnsureIntentReflectionsTable 幂等建表（服务启动时调用）。
+// 注意：建表已统一到 db/schema.sql 的 §Z 段（2026-11-27）。本函数保留为幂等兜底：
+// 不走 Open 的路径（测试直接构造 DB）与老库补列仍需要它。改列时必须同时改 schema.sql，
+// db/schema_drift_test.go 会扫 schema.sql 防止两处漂移。
 func (d *DB) EnsureIntentReflectionsTable() error {
 	_, err := d.Exec(`
 CREATE TABLE IF NOT EXISTS intent_reflections (

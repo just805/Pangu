@@ -2292,13 +2292,21 @@ export interface AssetDiff {
 
 // ---- 开放 API 凭证（M-12）----
 // 同一管理员账号下的程序化凭证，不是多用户；明文只在创建时返回一次。
+// API Key 权限范围：read < write < admin。
+// read  = 只读查询（GET）
+// write = 只读 + 改业务数据（任务/发现/资产/审批），不能改平台配置
+// admin = 全权（LLM/设置/工具安装/自定义工具/更新/MCP 客户端配置）
+export type APIKeyScope = "read" | "write" | "admin";
+
 export interface APIKey {
   id: number;
   name: string;
   key_hint: string;
+  scope: APIKeyScope;
   enabled: boolean;
   created_at: string;
   last_used_at?: string;
+  last_used_ip?: string;
   expires_at?: string;
 }
 
@@ -2321,3 +2329,80 @@ export type ReportTemplateInput = Pick<
   ReportTemplate,
   "name" | "page_header" | "classification" | "customer_override" | "sections"
 >;
+
+// ---- 系统监测（运行时快照）----
+// 与仪表盘分工：仪表盘回答「测出了什么」，这里回答「进程现在健康吗」。
+// 纯只读，后端每次请求现算，不落表。
+export interface MonitorProcess {
+  version: string;
+  go_version: string;
+  os: string;
+  arch: string;
+  num_cpu: number;
+  uptime_seconds: number;
+  goroutines: number;
+  heap_alloc_mb: number;
+  heap_sys_mb: number;
+  gc_count: number;
+  gc_last_pause_ms: number;
+}
+
+export interface MonitorDatabase {
+  open: number;
+  in_use: number;
+  idle: number;
+  max_open: number;
+  wait_count: number;
+  wait_ms: number;
+  max_idle_closed: number;
+  max_lifetime_closed: number;
+}
+
+export interface MonitorTask {
+  task_id: string;
+  name?: string;
+  status: string;
+  queued?: boolean;
+  paused?: boolean;
+  inflight: number;
+  llm_calls: number;
+  planner_round: number;
+  activity_drops: number;
+}
+
+export interface MonitorEngine {
+  tasks_total: number;
+  tasks_running: number;
+  tasks_queued: number;
+  tasks_paused: number;
+  tasks_terminal: number;
+  llm_calls_active: number;
+  activity_drops: number;
+  sse_subscribers: number;
+  llm_ready: boolean;
+  tasks: MonitorTask[];
+}
+
+export interface MonitorWarning {
+  level: "warn" | "info";
+  title: string;
+  detail: string;
+}
+
+export interface MonitorSchema {
+  tables: number;
+  created: number;
+  elapsed_ms: number;
+  lines: number;
+}
+
+export interface SystemMonitor {
+  now: number;
+  process: MonitorProcess;
+  database: MonitorDatabase;
+  schema: MonitorSchema;
+  engine: MonitorEngine;
+  traffic: { enabled: boolean; exchanges?: number };
+  scheduler: { due_plans?: number };
+  warnings: MonitorWarning[];
+}

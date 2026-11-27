@@ -143,6 +143,8 @@ func (s *Server) assembleTaskReport(ctx context.Context, t *Task) (report.TaskDo
 	covTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
 	cov, _ := s.m.Assets().TaskCoverage(covTaskID, t.Store.ID())
 	in := report.TaskDocxInput{
+		Compliance:     s.reportCompliance(ctx, covTaskID),
+		CodeScans:      s.reportCodeScans(ctx, covTaskID),
 		Title:          fmt.Sprintf("渗透测试报告 — %s", t.Description),
 		Goal:           t.Goal,
 		GeneratedAt:    time.Now(),
@@ -177,6 +179,69 @@ func (s *Server) assembleTaskReport(ctx context.Context, t *Task) (report.TaskDo
 		in.Sections = tpl.Sections
 	}
 	return in, nil
+}
+
+// complianceLabel 是基线名 → 报告里的人类可读名。未知基线直接回退原名，
+// 不猜——新增基线忘了加标签时报告仍可读，只是少一句中文。
+func complianceLabel(name string) string {
+	switch name {
+	case "djbh2":
+		return "等保 2.0 二级（裁剪）"
+	case "cis-web":
+		return "CIS Web 服务器基线（裁剪）"
+	default:
+		return name
+	}
+}
+
+// reportCompliance 读本任务的合规核查结果（M-09）。没有任何记录时返回 nil，
+// 报告据此省略该章——历史任务不该凭空多出一章「全未核查」。
+func (s *Server) reportCompliance(ctx context.Context, taskID int64) []report.ComplianceBaseline {
+	if s.m == nil || s.m.pg == nil || taskID <= 0 {
+		return nil
+	}
+	store := s.m.pg.Compliance()
+	var out []report.ComplianceBaseline
+	for _, name := range db.ComplianceBaselines() {
+		results, err := store.ListResults(ctx, taskID, name)
+		if err != nil || len(results) == 0 {
+			continue
+		}
+		items, _ := db.ComplianceBaseline(name)
+		byKey := make(map[string]db.ComplianceItem, len(items))
+		for _, it := range items {
+			byKey[it.Key] = it
+		}
+		lines := make([]report.ComplianceLine, 0, len(results))
+		for _, r := range results {
+			it := byKey[r.ItemKey]
+			title := it.Title
+			if title == "" {
+				title = r.ItemKey // 基线改了 key：宁可显示原 key，也不静默丢一行
+			}
+			lines = append(lines, report.ComplianceLine{
+				ItemKey: r.ItemKey, Title: title, Expect: it.Expect,
+				Status: r.Status, Evidence: r.Evidence, Note: r.Note,
+			})
+		}
+		out = append(out, report.ComplianceBaseline{
+			Name: name, Label: complianceLabel(name), Total: len(items), Lines: lines,
+		})
+	}
+	return out
+}
+
+// reportCodeScans 取本任务登记的代码资产扫描概要（M-02）。
+// 没有登记/没扫描过源码的任务返回 nil，报告不出「静态扫描线索」章。
+func (s *Server) reportCodeScans(ctx context.Context, taskID int64) []db.CodeScanBrief {
+	if s.m == nil || s.m.pg == nil || taskID <= 0 {
+		return nil
+	}
+	briefs, err := s.m.pg.CodeAssets().TaskCodeScanBriefs(ctx, taskID, 3)
+	if err != nil {
+		return nil // 报告不能因为这块失败而整份导不出
+	}
+	return briefs
 }
 
 // cveIntelFor 批量查情报库做 A11 富化：从 name/vulnclass/summary 提取 CVE 编号

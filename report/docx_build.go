@@ -57,9 +57,35 @@ type TaskDocxInput struct {
 	ReverseSecrets map[int64][]db.ReverseSecret
 	// Coverage 任务资产覆盖（P0-1）：范围内资产 vs 已触达；nil = 省略该节。
 	Coverage *db.Coverage
+	// Compliance 合规基线核查结果（M-09）：按基线分组；nil/空 = 省略该章
+	// （历史任务没做过核查，不该凭空多出一章「全未核查」）。
+	Compliance []ComplianceBaseline
+	// CodeScans 静态扫描概要（M-02）：按仓库聚合。nil/空 = 省略该章。
+	// 与「客户端/二进制分析」分开成章——源码与二进制的读者关注点不同。
+	CodeScans []db.CodeScanBrief
 	// Sections 是章节开关（M-10，来自报告模板）：缺省键=显示，false=跳过。
 	// 只有报告模板显式关闭时才跳过——历史行为（无模板）完全不变。
 	Sections map[string]bool
+}
+
+// ComplianceLine 是报告里一条合规核查结果。Title/Expect 来自内置基线定义
+// （报告需要人能看懂的检查项名，光给 item_key 等于没写）。
+type ComplianceLine struct {
+	ItemKey  string
+	Title    string
+	Expect   string
+	Status   string // pass|fail|na|unknown
+	Evidence string
+	Note     string
+}
+
+// ComplianceBaseline 是一组基线及其已记录的结果。Total 是基线定义里的总项数，
+// 用来在报告里区分「没查」和「查了没问题」——这两件事在合规语境下完全不同。
+type ComplianceBaseline struct {
+	Name  string // djbh2 / cis-web
+	Label string // 等保 2.0 二级 / CIS Web
+	Total int
+	Lines []ComplianceLine
 }
 
 // chapterEnabled 判断某章节是否渲染：无模板配置（nil）= 显示。
@@ -343,6 +369,20 @@ func BuildTaskDocx(in TaskDocxInput) *Docx {
 	d.H1("六、修复优先级路线图")
 	writeRemediationRoadmap(d, in.Findings)
 
+	// ── 七、合规基线核查（M-09 收尾）：有核查结果才出章，历史任务不受影响 ──
+	if chapterEnabled(in.Sections, "compliance") && len(in.Compliance) > 0 {
+		d.PageBreak()
+		d.H1("七、合规基线核查")
+		writeComplianceDocx(d, in.Compliance)
+	}
+
+	// ── 八、静态扫描线索（M-02）：只有登记并扫描过源码的任务才出章 ──
+	if chapterEnabled(in.Sections, "code_scan") && len(in.CodeScans) > 0 {
+		d.PageBreak()
+		d.H1("八、静态扫描线索")
+		writeCodeScanDocx(d, in.CodeScans)
+	}
+
 	// ── 附录 A：资产清单（A16）──
 	if chapterEnabled(in.Sections, "appendices") && len(in.AppendixAssets) > 0 {
 		d.PageBreak()
@@ -421,6 +461,127 @@ func writeRemediationRoadmap(d *Docx, fs []*db.DBFinding) {
 }
 
 // statusCN 分拣状态中文（路线图表用）。
+// distText 把「键 → 计数」渲染成一行可读文本（键排序，保证同一数据每次排版一致）。
+func distText(m map[string]int) string {
+	if len(m) == 0 {
+		return "无"
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		label := k
+		if label == "" {
+			label = "未标注"
+		}
+		parts = append(parts, fmt.Sprintf("%s %d", label, m[k]))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// writeCodeScanDocx 渲染「静态扫描线索」章。
+//
+// 措辞刻意强调「线索不是结论」：SAST 误报率高，若与已确认漏洞并列，读者会
+// 把「疑似」当「已证实」。所以本章独立、且不给漏洞计数并入封面统计。
+func writeCodeScanDocx(d *Docx, briefs []db.CodeScanBrief) {
+	d.P("本章列出授权范围内源码的静态扫描结果，作为「值得优先动态验证的位置」。" +
+		"这些是线索不是结论：未经动态验证的静态命中不计入漏洞统计，也不代表目标一定存在该问题。" +
+		"敏感信息类命中已脱敏，复核请按位置回原仓库查看。")
+	for _, b := range briefs {
+		title := b.AssetName
+		if b.Location != "" {
+			title += "（" + b.Location + "）"
+		}
+		d.H2(fmt.Sprintf("%s · 共 %d 条线索", title, b.Total))
+		d.P("扫描器：" + distText(b.ByScanner))
+		d.P("严重度：" + distText(b.BySeverity))
+		if len(b.TopSinks) == 0 {
+			continue
+		}
+		rows := make([][]string, 0, len(b.TopSinks))
+		for _, s := range b.TopSinks {
+			loc := s.FilePath
+			// 行号 0/负数当未填：成分分析（trivy）本来就没有行号，
+			// 拼出「go.mod:0」会让读者以为是某个真实位置。
+			if s.LineStart != nil && *s.LineStart > 0 {
+				loc += fmt.Sprintf(":%d", *s.LineStart)
+			}
+			rule := s.RuleID
+			if rule == "" && s.PackageName != "" {
+				rule = s.PackageName + " " + s.PackageVersion
+			}
+			rows = append(rows, []string{loc, clipRunes(rule, 80), strings.ToUpper(s.Severity)})
+		}
+		d.Table([]string{"位置", "规则 / 组件", "等级"}, rows)
+	}
+}
+
+// complianceStatusCN 把核查结论转成报告用词。未知状态一律显示「未核查」——
+// 合规报告里绝不能把没查的项显示成通过。
+func complianceStatusCN(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "pass":
+		return "符合"
+	case "fail":
+		return "不符合"
+	case "na":
+		return "不适用"
+	default:
+		return "未核查"
+	}
+}
+
+// complianceCounts 统计一组核查结果的四态分布。Word 与 Markdown 两个视图共用，
+// 避免两处各算一遍导致预览和交付件数字对不上。
+func complianceCounts(lines []ComplianceLine) (pass, fail, na, unknown int) {
+	for _, l := range lines {
+		switch complianceStatusCN(l.Status) {
+		case "符合":
+			pass++
+		case "不符合":
+			fail++
+		case "不适用":
+			na++
+		default:
+			unknown++
+		}
+	}
+	return
+}
+
+// complianceDetail 取一行要展示的证据文本：优先实测证据，其次备注，最后回落到
+// 基线定义的期望值（让「未核查」项也能看出这一项本该看什么）。
+func complianceDetail(l ComplianceLine) string {
+	if s := strings.TrimSpace(l.Evidence); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(l.Note); s != "" {
+		return s
+	}
+	if l.Expect != "" {
+		return "期望：" + l.Expect
+	}
+	return ""
+}
+
+// writeComplianceDocx 渲染合规基线核查章：每组一行统计 + 一张检查项表。
+func writeComplianceDocx(d *Docx, groups []ComplianceBaseline) {
+	d.P("本章按内置基线逐项列出核查结论。「不符合」项已在漏洞明细中作为发现上报（含证据与复现路径）；「未核查」表示本轮未实际检查，不等同于符合。")
+	for _, g := range groups {
+		pass, fail, na, unknown := complianceCounts(g.Lines)
+		d.H2(fmt.Sprintf("%s（已记录 %d / 基线共 %d 项）", g.Label, len(g.Lines), g.Total))
+		d.P(fmt.Sprintf("符合 %d 项 · 不符合 %d 项 · 不适用 %d 项 · 未核查 %d 项", pass, fail, na, unknown))
+		rows := make([][]string, 0, len(g.Lines))
+		for _, l := range g.Lines {
+			rows = append(rows, []string{l.Title, complianceStatusCN(l.Status), clipRunes(complianceDetail(l), 300)})
+		}
+		d.Table([]string{"检查项", "结论", "证据 / 说明"}, rows)
+	}
+}
+
 func statusCN(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "pending":

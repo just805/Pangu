@@ -227,6 +227,55 @@ func TaskMarkdown(in TaskDocxInput) string {
 		b.WriteString("\n")
 	}
 
+	// ── 七、合规基线核查（M-09 收尾）：与 Word 章同源，有记录才出章 ──
+	if len(in.Compliance) > 0 {
+		b.WriteString("## 七、合规基线核查\n\n")
+		b.WriteString("本章按内置基线逐项列出核查结论。「不符合」项已在漏洞明细中作为发现上报；「未核查」表示本轮未实际检查，不等同于符合。\n\n")
+		for _, g := range in.Compliance {
+			pass, fail, na, unknown := complianceCounts(g.Lines)
+			fmt.Fprintf(&b, "### %s（已记录 %d / 基线共 %d 项）\n\n", g.Label, len(g.Lines), g.Total)
+			fmt.Fprintf(&b, "符合 %d 项 · 不符合 %d 项 · 不适用 %d 项 · 未核查 %d 项\n\n", pass, fail, na, unknown)
+			b.WriteString("| 检查项 | 结论 | 证据 / 说明 |\n|---|---|---|\n")
+			for _, l := range g.Lines {
+				fmt.Fprintf(&b, "| %s | %s | %s |\n",
+					mdCell(l.Title), complianceStatusCN(l.Status), mdCell(clipRunes(complianceDetail(l), 300)))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	// ── 八、静态扫描线索（M-02）：与 Word 章同源，有记录才出章 ──
+	if len(in.CodeScans) > 0 {
+		b.WriteString("## 八、静态扫描线索\n\n")
+		b.WriteString("本章列出授权范围内源码的静态扫描结果，作为「值得优先动态验证的位置」。" +
+			"这些是线索不是结论：未经动态验证的静态命中不计入漏洞统计。\n\n")
+		for _, cs := range in.CodeScans {
+			title := cs.AssetName
+			if cs.Location != "" {
+				title += "（" + cs.Location + "）"
+			}
+			fmt.Fprintf(&b, "### %s · 共 %d 条线索\n\n", title, cs.Total)
+			fmt.Fprintf(&b, "- 扫描器：%s\n- 严重度：%s\n\n", distText(cs.ByScanner), distText(cs.BySeverity))
+			if len(cs.TopSinks) == 0 {
+				continue
+			}
+			b.WriteString("| 位置 | 规则 / 组件 | 等级 |\n|---|---|---|\n")
+			for _, s := range cs.TopSinks {
+				loc := s.FilePath
+				if s.LineStart != nil && *s.LineStart > 0 {
+					loc += fmt.Sprintf(":%d", *s.LineStart)
+				}
+				rule := s.RuleID
+				if rule == "" && s.PackageName != "" {
+					rule = s.PackageName + " " + s.PackageVersion
+				}
+				fmt.Fprintf(&b, "| %s | %s | %s |\n",
+					mdCell(loc), mdCell(clipRunes(rule, 80)), strings.ToUpper(s.Severity))
+			}
+			b.WriteString("\n")
+		}
+	}
+
 	// ── 附录 A：资产清单 ──
 	if len(in.AppendixAssets) > 0 {
 		b.WriteString("## 附录 A 资产清单\n\n")

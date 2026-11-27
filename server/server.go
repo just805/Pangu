@@ -932,6 +932,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/llm/records/tasks", s.pgLLMTasks)
 	mux.HandleFunc("GET /api/llm/records/by-model", s.pgTokenByModel) // 按模型聚合本任务 token 用量
 	mux.HandleFunc("GET /api/llm/records/{id}", s.pgGetLLMRecord)
+	// 系统监测：只读运行时快照（goroutine/连接池/引擎实时/依赖健康）。
+	// 与业务仪表盘分工——这里回答「进程现在健康吗」，不回答「测出了什么」。
+	mux.HandleFunc("GET /api/system/monitor", s.systemMonitor)
+
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	// 漏洞 IM 推送。渠道是「多实例 + 各自过滤规则」的资源，因此独立成一组

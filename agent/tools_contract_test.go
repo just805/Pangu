@@ -417,6 +417,9 @@ func TestApiContractRegisteredInAllToolSets(t *testing.T) {
 // 端到端：真起一个提供 OpenAPI 契约的 HTTP 服务，
 // 跑「工具 → 命令 → 真实 curl → 真实解析脚本」完整链路。
 func TestApiContractEndToEndWithRealServer(t *testing.T) {
+	// 这条链路要真跑解析脚本。本机没有可用的 Python 3 时跳过——
+	// 环境缺失不该报成代码失败（它会把真回归藏在一片红里）。
+	pythonCommand(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/openapi.json":
@@ -457,6 +460,12 @@ func TestApiContractEndToEndWithRealServer(t *testing.T) {
 		if err != nil {
 			t.Skip("找不到 shell")
 		}
+	}
+	// Windows 上的 bash.exe 常常只是 WSL 转发器：LookPath 命中但 WSL 未装时
+	// 一执行就报 "execvpe(/bin/bash) failed"。探测到 ≠ 能用，先跑一条 trivial
+	// 命令确认，否则这条测试会在 Windows 上报一条与代码无关的假失败。
+	if probe, perr := exec.Command(sh, "-c", "echo ok").CombinedOutput(); perr != nil || !strings.Contains(string(probe), "ok") {
+		t.Skipf("shell %s 不可用（Windows 上可能只是 WSL 转发器）：%v %s", sh, perr, probe)
 	}
 	run := exec.Command(sh, "-c", cmd)
 	run.Dir = dir

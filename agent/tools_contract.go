@@ -86,12 +86,19 @@ func (t *ToolSet) apiContractTool() actool.CoreTool {
 			if err := os.MkdirAll(workDir, 0o755); err != nil {
 				return actool.Errorf("创建工作目录失败: " + err.Error()), nil
 			}
+			// 契约解析只有 Python 脚本一条路（无 Go 等价实现），缺解释器时
+			// 直接给替代路径，别生成一条注定 9009 的命令。
+			if pythonInterpreter() == "" {
+				return actool.Errorf(pythonMissingMessage(
+					"用 katana / ffuf 爬路径找接口，或先 http_request 取 openapi.json / swagger.json " +
+						"再用 jq 或直接阅读提取接口清单")), nil
+			}
 			scriptPath, err := WriteContractScript(workDir)
 			if err != nil {
 				return actool.Errorf("写出契约解析脚本失败: " + err.Error()), nil
 			}
 			paths := resolveContractPaths(a.Paths)
-			cmd := buildContractCmd(base, paths, scriptPath, workDir)
+			cmd := buildContractCmd(pythonInterpreter(), base, paths, scriptPath, workDir)
 			return jsonResult(map[string]any{
 				"run_with_bash": cmd,
 				"script_path":   scriptPath,
@@ -150,7 +157,8 @@ func resolveContractPaths(custom string) []string {
 //
 // 流程：逐个路径 curl 探测（只看 200）→ 第一个命中的下载下来 → 交给解析脚本。
 // 契约文件落在工作目录（不是 /tmp——平台规约）。
-func buildContractCmd(base string, paths []string, scriptPath, workDir string) string {
+// py 是本机可用的 Python 3 命令名（空串 = 没有，调用方应先拦截并给出替代路径）。
+func buildContractCmd(py, base string, paths []string, scriptPath, workDir string) string {
 	quoted := make([]string, 0, len(paths))
 	for _, p := range paths {
 		quoted = append(quoted, quoteShell(base+p))
@@ -162,7 +170,7 @@ func buildContractCmd(base string, paths []string, scriptPath, workDir string) s
 			"if [ \"$code\" = \"200\" ]; then echo \"CONTRACT $u\"; break; fi; done",
 		strings.Join(quoted, " "), quoteShell(contractFile))
 	// 第二步：交给解析脚本。
-	return probe + " ; " + fmt.Sprintf("python3 %s %s", quoteShell(scriptPath), quoteShell(contractFile))
+	return probe + " ; " + fmt.Sprintf("%s %s %s", py, quoteShell(scriptPath), quoteShell(contractFile))
 }
 
 // contractScriptName 是契约解析脚本的文件名。

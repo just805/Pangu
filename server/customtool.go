@@ -185,11 +185,27 @@ const settingPythonInterp = "python_interpreter"
 // detectPython finds a python interpreter absolute path (python3 preferred).
 func detectPython() string {
 	for _, c := range []string{"python3", "python"} {
-		if p, err := exec.LookPath(c); err == nil {
+		p, err := exec.LookPath(c)
+		if err != nil {
+			continue
+		}
+		// 只认 Python 3，且必须真能跑起来。Windows 上的 python3.exe / python.exe
+		// 可能只是「应用执行别名」——LookPath 命中，一执行就报 exit 9009 并提示
+		// 去 Microsoft Store 安装。只看 PATH 会把这种壳当成可用解释器，
+		// 结果是自定义 Python 工具全部执行失败。
+		if probePython3(p) {
 			return p
 		}
 	}
 	return ""
+}
+
+// probePython3 跑一次版本检查确认解释器真的可用且是 Python 3。
+func probePython3(path string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, path,
+		"-c", "import sys; sys.exit(0 if sys.version_info[0] >= 3 else 1)").Run() == nil
 }
 
 // pythonInterpreter resolves the interpreter: user-set > stored auto-detect > live

@@ -46,6 +46,18 @@ func (b *Broadcaster) Subscribe(task string) (<-chan db.Activity, func()) {
 	}
 }
 
+// SubscriberCount 返回当前 SSE 订阅者总数（监测页用）。订阅者长期不释放会
+// 持续吃内存——这个数字是排查「内存缓慢上涨」时最先要看的一格。
+func (b *Broadcaster) SubscriberCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := 0
+	for _, set := range b.subs {
+		n += len(set)
+	}
+	return n
+}
+
 // Publish fans an activity out to all subscribers of a task. Non-blocking: if a
 // subscriber's buffer is full the event is dropped — the client reconnects with
 // its last seq cursor and catches up the gap from the DB, so liveness never

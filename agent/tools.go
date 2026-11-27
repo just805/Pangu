@@ -3184,6 +3184,9 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.findingFields(),
 		// compliance_checklist（M-09）：规划时看合规缺口，判断要不要派核查意图。
 		t.complianceChecklist(),
+		// 代码资产（M-02）：规划时看「这个目标有没有登记的源码」「反查某个接口的源码位置」，
+		// 据此判断该不该派白盒意图。登记/入库是写操作，只在 worker/main 侧开放。
+		t.codeScanPlan(), t.codeAssetContext(),
 		// search_recent_critical：按【时间】查最近披露的高危漏洞（不需先知道组件名/CVE 号）。
 		t.searchRecentCritical(),
 		// 微信小程序：解包产物静态审计（接口/密钥/云开发信息），规划判方向用。

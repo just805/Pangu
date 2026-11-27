@@ -497,6 +497,14 @@ func (t *ToolSet) diffResponses() actool.CoreTool {
 			if err := os.MkdirAll(workDir, 0o755); err != nil {
 				return actool.Errorf("创建工作目录失败: " + err.Error()), nil
 			}
+			// URL 模式的差分脚本要 Python 3 才能跑。缺解释器时先说清替代路径，
+			// 不要让 Bash 抛一条 `exit status 9009`——那对模型和人都没有信息量。
+			if pythonInterpreter() == "" {
+				return actool.Errorf(pythonMissingMessage(
+					"先用 Bash 把两段响应各存成一个文件" +
+						"（curl -sS -o resp_a -w '%{http_code}' '<url_a>'，B 同理），" +
+						"再调用本工具时传 file_a/resp_a、file_b/resp_b——文件模式是纯 Go 实现，不需要任何解释器。")), nil
+			}
 			scriptPath, err := WriteDiffScript(workDir)
 			if err != nil {
 				return actool.Errorf("写出差分脚本失败: " + err.Error()), nil
@@ -611,6 +619,15 @@ const diffScriptName = "resp_diff.py"
 // 认证头是模型生成的，进入 curl -H 前必须过 validateCurlHeaderValue：
 // 单引号只能防 shell 注入，防不了 CR/LF 拆头（CWE-113）和 `@file` 读本地文件。
 func buildDiffScript(a diffArgs, scriptPath, workDir string) (string, error) {
+	return buildDiffScriptWith(pythonInterpreter(), a, scriptPath, workDir)
+}
+
+// buildDiffScriptWith 是 buildDiffScript 的纯函数内核：解释器名由调用方给，
+// 便于单测覆盖「只有 python / 没有 python」两种环境。
+func buildDiffScriptWith(py string, a diffArgs, scriptPath, workDir string) (string, error) {
+	if py == "" {
+		return "", errNoPython
+	}
 	bodyA := filepath.Join(workDir, "resp_a_body")
 	bodyB := filepath.Join(workDir, "resp_b_body")
 	for _, h := range []string{a.HeaderA, a.HeaderB} {
@@ -626,10 +643,10 @@ func buildDiffScript(a diffArgs, scriptPath, workDir string) (string, error) {
 		return strings.Join(parts, " ")
 	}
 	return fmt.Sprintf(
-		"S=$(%s) ; T=$(%s) ; python3 %s %s %s \"$S\" \"$T\"",
+		"S=$(%s) ; T=$(%s) ; %s %s %s %s \"$S\" \"$T\"",
 		fetch(a.URLA, a.HeaderA, bodyA),
 		fetch(a.URLB, a.HeaderB, bodyB),
-		quoteShell(scriptPath), quoteShell(bodyA), quoteShell(bodyB)), nil
+		py, quoteShell(scriptPath), quoteShell(bodyA), quoteShell(bodyB)), nil
 }
 
 // quoteShell 用 POSIX 单引号包裹一个值（内部单引号按 '\'' 转义）。

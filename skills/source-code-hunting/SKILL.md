@@ -13,12 +13,18 @@ tags:
 
 | 场景 | 用平台能力 |
 |---|---|
-| 静态扫描 | Bash 跑 `semgrep`/`gitleaks`/`trufflehog`；结果落任务目录 |
-| 依赖 CVE | `mvn dependency:tree`/`npm audit`/`go list -m all` + `search_vulns` |
+| 源码登记 | `code_asset_register`（仓库/源码包 → 归属企业，返回 `code_asset_id`；**只在授权范围内登记**） |
+| 静态扫描 | `code_scan_plan` 生成 semgrep/gitleaks/trivy 命令 → Bash 执行 → `code_scan_ingest` 把 JSON 入库。结果进图谱后规划者能看到「这个仓库有多少处 sink」，不再看完就丢 |
+| 动态 → 源码反查 | `code_asset_context`（给运行时 URL/接口名，反查后端 handler 与 sink 位置、用了什么 ORM、有没有参数化——这是白盒能直接回答、黑盒只能猜的问题） |
+| 依赖 CVE | `code_scan_plan` 的 trivy 一路（组件+版本进 `code_scan_results`）+ `search_vulns` |
 | 代码级验证 | 起本地服务或 `http_request` 打授权目标；`session_login` 建身份 |
 | 越权验证 | `auth_request` + `diff_responses`（A/B 对照） |
 | 证据 | `save_evidence`（代码片段、请求响应、行号）；`report_finding` |
 | 候选点记录 | 每点 `record_fact`：文件:行号、sink、输入来源、可达性、验证状态 |
+
+> **静态线索不是漏洞**：`code_scan_ingest` 入库的是「可疑位置」，
+> 报告里单列「静态扫描线索」并与已确认漏洞分开；要 `report_finding` 仍必须有动态证据。
+> gitleaks 的命中值在入库时已脱敏（只留前 4 位 + 长度），复核时按行号回原仓库看。
 
 ## 一、先做三件事（比逐行读快 10 倍）
 

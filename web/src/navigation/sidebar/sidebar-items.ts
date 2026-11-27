@@ -104,6 +104,7 @@ export const sidebarItems: NavGroup[] = [
       { id: "intercept", title: "拦截规则", url: "/system/intercept", icon: ShieldAlert },
       { id: "asset-intercept", title: "资产拦截", url: "/system/intercept/assets", icon: Ban },
       { id: "approvals", title: "拦截审批", url: "/system/intercept/approvals", icon: ClipboardList },
+      { id: "monitor", title: "系统监测", url: "/system/monitor", icon: Activity },
       { id: "logs", title: "日志", url: "/system/logs", icon: ScrollText },
       { id: "api-keys", title: "开放 API", url: "/system/api-keys", icon: KeyRound },
       { id: "report-templates", title: "报告模板", url: "/system/report-templates", icon: FileText },

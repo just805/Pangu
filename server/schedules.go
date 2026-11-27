@@ -57,7 +57,7 @@ func (s *Server) runDueSchedules(ctx context.Context) {
 		// 上一轮任务未到终态 → 不叠加执行，顺延一个周期。同一计划堆叠多个任务
 		// 既浪费预算，也会让两个任务同时打同一个目标。
 		if sc.LastTaskID > 0 {
-			if st := s.m.TaskStatus(strconv.FormatInt(sc.LastTaskID, 10)); st != "" && !isTerminalStatus(st) {
+			if scheduleShouldDefer(s.scheduleLastTaskStatus(sc.LastTaskID)) {
 				if err := store.Touch(ctx, sc.ID, next); err != nil {
 					log.Printf("[schedule] 计划 #%d 顺延失败: %v", sc.ID, err)
 				}
@@ -66,6 +66,30 @@ func (s *Server) runDueSchedules(ctx context.Context) {
 		}
 		s.triggerSchedule(ctx, store, sc, next)
 	}
+}
+
+// scheduleLastTaskStatus 取上一轮任务的状态：优先内存（最新），回落数据库。
+//
+// 只查内存是错的：进程重启后 m.tasks 是空的，DB 里那个任务可能还在跑，返回空串
+// 会被 scheduleShouldDefer 判成「已结束」而立刻再起一个任务——正好造成本模块
+// 最该避免的叠加执行。
+func (s *Server) scheduleLastTaskStatus(id int64) string {
+	if st := s.m.TaskStatus(strconv.FormatInt(id, 10)); st != "" {
+		return st
+	}
+	if task, err := s.m.PG().GetTask(id); err == nil && task != nil {
+		return task.Status
+	}
+	return ""
+}
+
+// scheduleShouldDefer 判断本轮是否放弃触发：上一轮任务还没到终态就顺延一个周期。
+// 同一计划堆叠多个任务既浪费预算，也会让两个任务同时打同一个目标。
+//
+// 空状态（任务已被删/查不到）不阻塞——否则一条历史脏 LastTaskID 会让计划永久停摆。
+// 这个判定被单测钉住，改它必须同时改测试。
+func scheduleShouldDefer(lastStatus string) bool {
+	return lastStatus != "" && !isTerminalStatus(lastStatus)
 }
 
 // triggerSchedule 用计划参数新建一个任务并启动。失败只记在计划的 last_error 上，

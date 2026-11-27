@@ -117,6 +117,8 @@ import type {
   AssetSnapshot,
   AssetDiff,
   APIKey,
+  APIKeyScope,
+  SystemMonitor,
   ReportTemplate,
   ReportTemplateInput,
   TokenTotal,
@@ -406,10 +408,19 @@ export const api = {
   assetSnapshotDiff: (id: number, base?: number) =>
     get<AssetDiff>(`/assets/snapshots/${id}/diff${base ? `?base=${base}` : ""}`),
   // 开放 API 凭证（M-12）：创建时只返回一次明文。
+  // scope 决定这把 Key 能走到哪一层（read < write < admin）；admin 需 confirm_admin。
   apiKeys: () => get<APIKey[]>("/api-keys"),
-  createAPIKey: (name: string, expiresDays: number) =>
-    post<{ key: APIKey; secret: string; note: string }>("/api-keys", { name, expires_days: expiresDays }),
+  createAPIKey: (name: string, scope: APIKeyScope, expiresDays: number, confirmAdmin = false) =>
+    post<{ key: APIKey; secret: string; note: string }>("/api-keys", {
+      name,
+      scope,
+      expires_days: expiresDays,
+      confirm_admin: confirmAdmin,
+    }),
   deleteAPIKey: (id: number) => del<{ deleted: number }>(`/api-keys/${id}`),
+  // 系统监测：只读运行时快照（goroutine/连接池/引擎实时/依赖健康）。
+  // 每次请求现算，监测页按 5s 轮询——不用 SSE，排障不需要毫秒级。
+  systemMonitor: () => get<SystemMonitor>("/system/monitor"),
   // 报告模板（M-10）：页眉/密级/委托方覆盖 + 章节开关。
   reportTemplates: () => get<ReportTemplate[]>("/report-templates"),
   createReportTemplate: (input: ReportTemplateInput) => post<{ id: number }>("/report-templates", input),

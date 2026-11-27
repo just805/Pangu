@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/just805/pangu/db"
 )
 
 const (
@@ -366,11 +369,11 @@ func verifyJWT(tokenStr string, key []byte) bool {
 // X-Forwarded 头与浏览器历史/Referer，一个 7 天有效的 JWT 留在别人的日志里是
 // 实打实的会话劫持面。现在 EventSource 走 HttpOnly cookie（同源请求浏览器自动
 // 携带，cookie 不区分端口，dev 的 :3000→:8787 同样适用），query 通道整体移除。
-// apiKeyAllowed 校验开放 API 凭证（M-12）。优先 X-API-Key 头，其次
+// apiKeyVerify 校验开放 API 凭证（M-12）。优先 X-API-Key 头，其次
 // Authorization: Bearer pk_…（CI/脚本常见写法）。查询失败 fail-closed。
-func (s *Server) apiKeyAllowed(r *http.Request) bool {
+func (s *Server) apiKeyVerify(r *http.Request) (db.APIKeyAuth, bool) {
 	if s.m == nil || s.m.pg == nil {
-		return false
+		return db.APIKeyAuth{}, false
 	}
 	raw := strings.TrimSpace(r.Header.Get("X-API-Key"))
 	if raw == "" {
@@ -379,9 +382,93 @@ func (s *Server) apiKeyAllowed(r *http.Request) bool {
 		}
 	}
 	if raw == "" {
+		return db.APIKeyAuth{}, false
+	}
+	return s.m.pg.VerifyAPIKey(r.Context(), raw, clientIP(r))
+}
+
+// apiKeyCtxKey 把已校验的 Key 授权信息挂到请求上下文：MCP 服务端等需要知道
+// 调用方是 JWT 会话还是某把程序化凭证（例如决定是否允许写操作）。
+type apiKeyCtxKey struct{}
+
+// apiKeyAuthFrom 读取上下文里的 Key 授权信息；JWT 会话返回 false。
+func apiKeyAuthFrom(r *http.Request) (db.APIKeyAuth, bool) {
+	v, ok := r.Context().Value(apiKeyCtxKey{}).(db.APIKeyAuth)
+	return v, ok
+}
+
+// apiKeyAdminSegments 是「改平台自身行为」的入口首段——这类能力给到程序化凭证
+// 等于给了整台平台：装宿主工具（任意包安装）、自定义工具（任意代码执行）、
+// LLM 通道配置（可把 token 引到外部）、一键更新、MCP 客户端配置（可外连任意服务）。
+//
+// 用首段而不是字符串前缀匹配：/api/llm 是配置（admin），/api/llm-records 是
+// 只读请求记录（read），前缀匹配会把后者一起升到 admin。
+var apiKeyAdminSegments = map[string]bool{
+	"llm": true, "settings": true, "system": true, "update": true,
+	"hostenv": true, "hosttools": true, "mcp": true, "api-keys": true,
+	"skills": true, "agents": true, "prompts": true, "tools": true,
+	"notify": true, "proxypool": true, "c2": true, "listeners": true,
+	"backup": true, "logs": true, "report-templates": true,
+	// 认证面：改密码 / 吊销全部会话 / 吊销当前会话都能直接接管或踢掉管理员。
+	"auth": true,
+}
+
+// apiKeyReadOnlyPaths 是落在 admin 段内、但语义只读的精确路径例外。
+// 对外 MCP 出口（/api/mcp/server）目前只暴露只读工具，read 档应当可用。
+var apiKeyReadOnlyPaths = map[string]bool{
+	"/api/mcp/server": true,
+}
+
+// requiredAPIKeyScope 判定一次请求需要的最低权限档。判定规则刻意保守：
+// 未知路径按 admin 段处理（多拦不漏放），非 GET 一律至少 write。
+func requiredAPIKeyScope(method, path string) string {
+	if apiKeyReadOnlyPaths[path] {
+		return db.APIKeyScopeRead
+	}
+	seg := strings.TrimPrefix(path, "/api/")
+	if i := strings.IndexByte(seg, '/'); i >= 0 {
+		seg = seg[:i]
+	}
+	if apiKeyAdminSegments[seg] {
+		return db.APIKeyScopeAdmin
+	}
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return db.APIKeyScopeRead
+	}
+	return db.APIKeyScopeWrite
+}
+
+// authExemptPath 是 requireAuth 的免鉴权白名单。刻意精确到端点而不是
+// "/api/auth/" 前缀——前缀豁免会把 change-password / revoke-* 一起放进来，
+// 一把 read 档的 Key 就能吊销管理员全部会话。
+func authExemptPath(p string) bool {
+	switch p {
+	case "/api/health",
+		"/api/auth/status",
+		"/api/auth/init",
+		"/api/auth/login",
+		"/api/auth/logout":
+		return true
+	}
+	return false
+}
+
+// apiKeyPass 用 API Key 完成一次鉴权：校验 → 判 scope → 放行或 403。
+// 返回 true 表示请求已被本函数处理（无论放行还是拒绝）；false 表示请求没带 Key。
+func (s *Server) apiKeyPass(w http.ResponseWriter, r *http.Request, h http.Handler) bool {
+	auth, ok := s.apiKeyVerify(r)
+	if !ok {
 		return false
 	}
-	return s.m.pg.VerifyAPIKey(r.Context(), raw)
+	need := requiredAPIKeyScope(r.Method, r.URL.Path)
+	if !db.APIKeyScopeAllows(auth.Scope, need) {
+		log.Printf("[api-key] 拒绝 #%d（scope=%s）%s %s：需要 %s", auth.ID, auth.Scope, r.Method, r.URL.Path, need)
+		writeErr(w, 403, fmt.Sprintf("该 API Key 的权限范围是 %s，本次调用需要 %s", auth.Scope, need))
+		return true
+	}
+	h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), apiKeyCtxKey{}, auth)))
+	return true
 }
 
 func extractToken(r *http.Request) string {
@@ -442,7 +529,7 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) requireAuth(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/api/auth/") || p == "/api/health" {
+		if authExemptPath(p) {
 			h.ServeHTTP(w, r)
 			return
 		}
@@ -450,9 +537,8 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 		if tok == "" {
 			// 开放 API 凭证（M-12）：X-API-Key 头。与 JWT 走完全相同的下游——
 			// 任务创建、拦截审批、范围守卫一个不少。它不是多用户，只是同一管理员
-			// 账号的程序化调用方式。
-			if s.apiKeyAllowed(r) {
-				h.ServeHTTP(w, r)
+			// 账号的程序化调用方式；scope 决定它能走到哪一层。
+			if s.apiKeyPass(w, r, h) {
 				return
 			}
 			writeErr(w, 401, "未授权")
@@ -461,8 +547,7 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 		claims, ok := parseSessionJWT(tok, s.currentJWTKey())
 		if !ok {
 			// 兼容把 Key 放进 Authorization: Bearer 的调用方（CI 常见写法）。
-			if s.apiKeyAllowed(r) {
-				h.ServeHTTP(w, r)
+			if s.apiKeyPass(w, r, h) {
 				return
 			}
 			writeErr(w, 401, "token 无效或已过期")

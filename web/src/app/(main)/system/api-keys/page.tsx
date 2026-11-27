@@ -11,6 +11,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -30,10 +37,21 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
-import type { APIKey } from "@/lib/types";
+import type { APIKey, APIKeyScope } from "@/lib/types";
 
 // 开放 API 凭证（M-12）：给 CI / 工单 / SOAR 程序化调用平台用。
-// 权限等同管理员——页面把这个风险写清楚，避免被当成低权 token 外发。
+// 权限按 scope 最小化：read 只读、write 改业务数据、admin 全权。给 CI 建一把
+// write 就够——没必要让一把外发的 Key 能装工具或改 LLM 配置。
+
+const SCOPES: { value: APIKeyScope; label: string; hint: string }[] = [
+  { value: "read", label: "read · 只读", hint: "只能查询：任务列表、发现、资产、流量" },
+  { value: "write", label: "write · 业务读写", hint: "可创建/修改任务与发现，不能改平台配置" },
+  { value: "admin", label: "admin · 全权", hint: "含 LLM 配置、工具安装、自定义工具、一键更新" },
+];
+
+function scopeLabel(s?: string): string {
+  return SCOPES.find((x) => x.value === s)?.label ?? s ?? "—";
+}
 
 function fmtTime(v?: string): string {
   if (!v) return "—";
@@ -46,6 +64,8 @@ export default function APIKeysPage() {
   const [loading, setLoading] = React.useState(true);
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState("");
+  const [scope, setScope] = React.useState<APIKeyScope>("read");
+  const [confirmAdmin, setConfirmAdmin] = React.useState(false);
   const [expiresDays, setExpiresDays] = React.useState("0");
   const [creating, setCreating] = React.useState(false);
   const [secret, setSecret] = React.useState("");
@@ -67,11 +87,14 @@ export default function APIKeysPage() {
 
   async function create() {
     if (!name.trim()) return toast.error("请填写用途名称");
+    if (scope === "admin" && !confirmAdmin) return toast.error("admin 档需要勾选确认");
     setCreating(true);
     try {
-      const res = await api.createAPIKey(name.trim(), Number(expiresDays) || 0);
+      const res = await api.createAPIKey(name.trim(), scope, Number(expiresDays) || 0, confirmAdmin);
       setSecret(res.secret);
       setName("");
+      setScope("read");
+      setConfirmAdmin(false);
       setExpiresDays("0");
       await load();
     } catch (e) {
@@ -110,7 +133,8 @@ export default function APIKeysPage() {
           <p className="text-muted-foreground text-sm">
             给 CI / 工单 / SOAR 使用的程序化凭证，请求时带 <code className="text-xs">X-API-Key</code> 或
             <code className="text-xs"> Authorization: Bearer pk_…</code>。
-            <span className="font-medium text-destructive">权限等同管理员</span>——请勿发到公开渠道。
+            权限按 <span className="font-medium">read &lt; write &lt; admin</span> 最小化；
+            <span className="font-medium text-destructive">admin 档可改平台配置</span>，仅给可信流程。
           </p>
         </div>
         <Dialog
@@ -154,6 +178,44 @@ export default function APIKeysPage() {
                     placeholder="如：CI 冒烟 / 工单系统"
                   />
                 </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="k-scope">权限范围</Label>
+                  <Select
+                    value={scope}
+                    onValueChange={(v) => {
+                      setScope(v as APIKeyScope);
+                      if (v !== "admin") setConfirmAdmin(false);
+                    }}
+                  >
+                    <SelectTrigger id="k-scope">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SCOPES.map((s) => (
+                        <SelectItem key={s.value} value={s.value}>
+                          {s.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-muted-foreground text-xs">
+                    {SCOPES.find((s) => s.value === scope)?.hint}
+                  </p>
+                </div>
+                {scope === "admin" && (
+                  <label className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={confirmAdmin}
+                      onChange={(e) => setConfirmAdmin(e.target.checked)}
+                    />
+                    <span>
+                      我确认这把 Key 需要 <span className="font-medium">全权</span>（可装工具、改 LLM
+                      配置、删除任务）。外泄即等于交出平台。
+                    </span>
+                  </label>
+                )}
                 <div className="grid gap-1.5">
                   <Label htmlFor="k-exp">有效期（天，0 = 长期）</Label>
                   <Input
@@ -204,6 +266,13 @@ export default function APIKeysPage() {
                     <Badge variant="secondary" className="font-mono">
                       {k.key_hint}
                     </Badge>
+                    <Badge
+                      variant={k.scope === "admin" ? "destructive" : "outline"}
+                      className="font-mono text-[10px]"
+                      title={scopeLabel(k.scope)}
+                    >
+                      {k.scope}
+                    </Badge>
                   </CardTitle>
                   <Button variant="ghost" size="sm" onClick={() => setPendingDelete(k)}>
                     <Trash2Icon className="text-destructive size-4" />
@@ -212,7 +281,10 @@ export default function APIKeysPage() {
               </CardHeader>
               <CardContent className="text-muted-foreground grid gap-1 text-xs">
                 <div>创建：{fmtTime(k.created_at)}</div>
-                <div>最近使用：{fmtTime(k.last_used_at)}</div>
+                <div>
+                  最近使用：{fmtTime(k.last_used_at)}
+                  {k.last_used_ip ? ` · ${k.last_used_ip}` : ""}
+                </div>
                 <div>过期：{k.expires_at ? fmtTime(k.expires_at) : "长期有效"}</div>
               </CardContent>
             </Card>

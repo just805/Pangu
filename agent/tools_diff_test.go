@@ -531,16 +531,22 @@ func TestDiffResponsesEndToEndWithRealHTTP(t *testing.T) {
 
 // --- 小工具 ---
 
-// pythonCommand 定位 python3（找不到就跳过需要真跑 python 的测试）。
+// pythonCommand 返回本机可用的 Python 3 命令（找不到就跳过需要真跑 python 的测试）。
+//
+// 复用生产侧的 pythonInterpreter：它真跑一次验版本，而不是只看 LookPath。
+// Windows 上 `python` 可能只是应用商店的应用执行别名——LookPath 能命中、
+// 执行却失败（exit 9009），只查 PATH 会让测试报一条与代码无关的假失败。
 func pythonCommand(t *testing.T) string {
 	t.Helper()
-	for _, name := range []string{"python3", "python"} {
-		if p, err := exec.LookPath(name); err == nil {
-			return p
-		}
+	py := pythonInterpreter()
+	if py == "" {
+		t.Skip("本机没有可用的 Python 3，跳过脚本对照测试")
 	}
-	t.Skip("找不到 python，跳过脚本对照测试")
-	return ""
+	p, err := exec.LookPath(py)
+	if err != nil {
+		t.Skipf("Python 3 命令 %q 不在 PATH，跳过脚本对照测试", py)
+	}
+	return p
 }
 
 func itoa(n int) string {

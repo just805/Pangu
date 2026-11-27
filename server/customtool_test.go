@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -84,10 +83,7 @@ func TestShellQuote(t *testing.T) {
 // stdin JSON and the mirrored env var, then print — verifying the whole script
 // param-passing path. Skips if no python3.
 func TestExecPython(t *testing.T) {
-	interp, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 unavailable")
-	}
+	interp := workingPython3(t)
 	code := `import json,sys,os
 a = json.load(sys.stdin)
 print("stdin_target=" + a["target"])
@@ -156,12 +152,26 @@ func TestRunHTTPTool(t *testing.T) {
 	}
 }
 
-func TestDetectPython(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 unavailable")
+// workingPython3 返回本机真能跑起来的 Python 3 路径（与生产侧 detectPython 同一判定），
+// 没有则跳过测试。只看 LookPath 会把 Windows 应用商店的应用执行别名当成可用解释器，
+// 让测试报一条与代码无关的 exit 9009。
+func workingPython3(t *testing.T) string {
+	t.Helper()
+	if p := detectPython(); p != "" {
+		return p
 	}
-	if p := detectPython(); p == "" {
-		t.Fatal("detectPython returned empty despite python3 on PATH")
+	t.Skip("本机没有可用的 Python 3")
+	return ""
+}
+
+func TestDetectPython(t *testing.T) {
+	p := detectPython()
+	if p == "" {
+		t.Skip("本机没有可用的 Python 3")
+	}
+	// 探测到的解释器必须真能执行——这正是 detectPython 加版本验证的意义。
+	if !probePython3(p) {
+		t.Fatalf("detectPython 返回 %q 但执行失败（不应把应用商店别名当解释器）", p)
 	}
 }
 

@@ -762,6 +762,12 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetNonStreaming(plannerRuntime.nonStreaming)
 	pl.SetMaxTokens(plannerRuntime.maxTokens)
 	pl.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
+	// 态势增量注入（默认关）：长任务每轮全量注入近百 KB 态势是最大的一笔固定开销，
+	// 但压缩策略的正确性只能由实测的规划质量来验证，所以先作为 settings 开关存在。
+	pl.SetIncrementalSituation(func() bool {
+		pg := s.m.PG()
+		return pg != nil && pg.GetBool("planner_incremental_situation", false)
+	})
 	pl.SetKillWork(s.engine.KillWork)
 	pl.SetSteerWork(s.engine.SteerWork)
 	// Guard 归因 → graph_overview 的 guard_attributions 块（计数 + B6 最近样本，

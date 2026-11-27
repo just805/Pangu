@@ -773,6 +773,11 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// save_evidence / list_artifacts：证据附件（v0.5.0）——截图/数据样本/日志
 		// 落盘登记，随报告导出证据包；报告里用 ![说明](artifact:<id>) 引用。
 		t.saveEvidence(), t.listArtifacts(),
+		// 代码资产（M-02）：登记源码 → 生成扫描命令 → 把扫描器 JSON 入库 → 按运行时 URL 反查。
+		// 静态线索不自动变漏洞，要动态验证后 report_finding。
+		t.codeAssetRegister(), t.codeScanPlan(), t.codeScanIngest(), t.codeAssetContext(),
+		// PoC 预验证（M-16）：先在本地仿制环境里跑通，再打真目标。沙箱不出网。
+		t.pocPrevalidate(),
 		// 以下工具仍【不给】worker，只留给 planner/main（读上下文、跨 work 复盘是规划职责，
 		// worker 只做单条意图的执行与写回）：list_facts / list_companies / list_worker_traces。
 	}
@@ -825,6 +830,10 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.findingFields(),
 		// compliance_checklist / compliance_record（M-09）：人也可直接补合规核查结果。
 		t.complianceChecklist(), t.complianceRecord(),
+		// 代码资产（M-02）：人在环路上也能登记仓库、看扫描分布、按接口反查源码位置。
+		t.codeAssetRegister(), t.codeScanPlan(), t.codeScanIngest(), t.codeAssetContext(),
+		// PoC 预验证（M-16）：人也可以先让平台在仿制环境里验一遍 PoC。
+		t.pocPrevalidate(),
 	}
 }
 

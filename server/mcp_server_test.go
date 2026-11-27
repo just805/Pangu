@@ -57,10 +57,17 @@ func TestMCPInitializeAndToolsList(t *testing.T) {
 			t.Errorf("工具 %s 缺少 inputSchema", tl.Name)
 		}
 	}
-	for _, want := range []string{"list_findings", "get_finding", "list_tasks"} {
+	for _, want := range []string{
+		"list_findings", "get_finding", "list_tasks", "get_task",
+		"list_assets", "search_traffic", "get_traffic", "search_vulns",
+	} {
 		if !names[want] {
 			t.Errorf("工具清单缺少 %s", want)
 		}
+	}
+	// 工具名重复会让外部 Agent 的 tools/call 路由到错误实现。
+	if len(names) != len(listResp.Result.Tools) {
+		t.Errorf("工具名有重复：%d 个唯一名 / %d 个工具", len(names), len(listResp.Result.Tools))
 	}
 	// 只读边界：不应暴露任何写工具。
 	for _, banned := range []string{"create_task", "run_task", "delete_finding"} {

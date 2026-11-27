@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 	"time"
@@ -37,6 +38,19 @@ var schemaDeadlockRetryDelays = [...]time.Duration{
 
 type schemaExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+// countPublicTables 数 public 下的基础表。用于判断本次启动是否真的建了结构
+// （空库首次 vs 已有库幂等 no-op），也让不同版本的部署能对比实际表数。
+// 查询失败返回 0——这只是观测数据，绝不能因为数不清表就挡住启动。
+func countPublicTables(conn *sql.Conn) int {
+	var n int
+	if err := conn.QueryRowContext(context.Background(), `
+SELECT count(*) FROM information_schema.tables
+WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`).Scan(&n); err != nil {
+		return 0
+	}
+	return n
 }
 
 func isPostgresDeadlock(err error) bool {
@@ -94,9 +108,41 @@ func DSN() (dsn, source string, err error) {
 	return config.PostgresDSN()
 }
 
+// SchemaStatus 是本次启动应用 schema 的观测结果。
+//
+// 存在的理由：schema.sql 每次启动全文 Exec 且全靠幂等（1726 行 / 76 表），
+// 但外面完全看不见它跑了多久、有没有真的建表。空库首次约 2.2s、已有库约 0.7s，
+// 这层差异如果不暴露，「启动慢」和「迁移没生效」都只能靠猜。
+type SchemaStatus struct {
+	Tables    int   `json:"tables"`     // 应用后 public 下的基础表数
+	Created   int   `json:"created"`    // 本次新建的表数（0 = 已有库，无结构变化）
+	ElapsedMS int64 `json:"elapsed_ms"` // 应用耗时
+	Lines     int   `json:"lines"`      // schema.sql 行数（判断部署的是哪一版最省事）
+}
+
 // DB wraps the shared *sql.DB. PG handles its own connection pool + concurrency
 // (MVCC), so unlike the old SQLite store there is no process-wide write mutex.
-type DB struct{ *sql.DB }
+type DB struct {
+	*sql.DB
+	schema SchemaStatus
+}
+
+// SchemaStatus 返回本次启动应用 schema 的观测结果（零值 = 尚未应用）。
+func (d *DB) SchemaStatus() SchemaStatus { return d.schema }
+
+// TableCount 实时数 public 下的基础表。
+//
+// 为什么不能直接用 SchemaStatus().Tables：那只是 schema 阶段结束时的数字。
+// 另有四张表（llm_usage / llm_records / task_artifacts / intent_reflections）
+// 是 server 在建 Manager 时由各自代码 CREATE TABLE IF NOT EXISTS 建的，不在
+// schema.sql 里——启动快照会比稳定态少几张，监测页上看着像丢表。
+func (d *DB) TableCount() (int, error) {
+	var n int
+	err := d.QueryRowContext(context.Background(), `
+SELECT count(*) FROM information_schema.tables
+WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`).Scan(&n)
+	return n, err
+}
 
 // ensureDatabase connects to the postgres system database and creates the target
 // database if it does not exist. dsn must be a postgres:// URL.
@@ -153,20 +199,40 @@ func Open(dsn string) (*DB, error) {
 		sqlDB.Close()
 		return nil, fmt.Errorf("ping postgres (%s): %w", config.Redact(dsn), err)
 	}
-	d := &DB{sqlDB}
+	d := &DB{DB: sqlDB}
 	// pgx runs multi-statement Exec via the simple protocol when there are no args.
 	// Keep the dedicated lock connection checked out until both DDL and seeding
 	// finish so concurrent application instances cannot initialize out of order.
 	err = withSchemaMigrationLock(context.Background(), sqlDB, func(conn *sql.Conn) error {
+		tablesBefore := countPublicTables(conn)
+		started := time.Now()
 		if err := applySchemaWithRetry(context.Background(), conn, time.Sleep); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
 		}
+		schemaApplied := time.Since(started)
 		if err := d.seedBuiltins(); err != nil {
 			return fmt.Errorf("seed builtins: %w", err)
 		}
 		// 漏洞字段定义（M-11）：ON CONFLICT DO NOTHING，不覆盖用户改过的 label/hint。
 		if err := d.SeedFindingFieldDefs(context.Background()); err != nil {
 			return fmt.Errorf("seed finding field defs: %w", err)
+		}
+		// 表数在 seed 之后再数：schema.sql 之外还有代码建的表（如 llm_usage 系列），
+		// 早数会让「首次初始化」的数字比稳定态少几张，监测页上看着像丢表。
+		tablesAfter := countPublicTables(conn)
+		d.schema = SchemaStatus{
+			Tables:    tablesAfter,
+			Created:   max(tablesAfter-tablesBefore, 0),
+			ElapsedMS: schemaApplied.Milliseconds(),
+			Lines:     strings.Count(schemaSQL, "\n") + 1,
+		}
+		// 启动日志：一眼看出「首次初始化」还是「无变化」，以及慢在哪一步。
+		if d.schema.Created > 0 {
+			log.Printf("[pg] schema 初始化完成：新增 %d 张表，现有 %d 张，schema 耗时 %d ms（schema.sql %d 行）",
+				d.schema.Created, d.schema.Tables, d.schema.ElapsedMS, d.schema.Lines)
+		} else {
+			log.Printf("[pg] schema 已就绪：%d 张表，本次无结构变化，幂等检查 %d ms（schema.sql %d 行）",
+				d.schema.Tables, d.schema.ElapsedMS, d.schema.Lines)
 		}
 		return nil
 	})
