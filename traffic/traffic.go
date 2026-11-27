@@ -326,6 +326,11 @@ func (t *Traffic) ProxyAddr() string {
 	return "http://" + t.addr
 }
 
+// ListenAddr 返回录制代理的原始监听地址（未补 http:// 前缀），供监测页判断
+// 「是否对所有网卡开放」。这是一个无认证的代理：绑 0.0.0.0 时局域网内任何人都能
+// 把它当代理用，既污染流量库也消耗带宽，所以这个值必须让运维看得见。
+func (t *Traffic) ListenAddr() string { return t.addr }
+
 // ProxyPoolEnabled reports whether the proxy pool is configured and running.
 func (t *Traffic) ProxyPoolEnabled() bool {
 	return t.pool.Load() != nil

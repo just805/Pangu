@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import type { MonitorTask, SystemMonitor } from "@/lib/types";
+import type { MonitorSchema, MonitorTask, SystemMonitor } from "@/lib/types";
 
 // 系统监测：回答「进程现在健康吗」，与仪表盘（测出了什么）分工。
 // 只读、5s 轮询、页面不可见时暂停——排障页不该成为后台负担。
@@ -46,6 +46,25 @@ function Metric({
       {hint ? <div className="text-muted-foreground text-[11px] leading-tight">{hint}</div> : null}
     </div>
   );
+}
+
+// schemaHint 区分「首次初始化」与「版本升级」。
+//
+// 不能只看 created > 0：老库升级时 created 也会大于 0（新增几张表），
+// 被标成「首次初始化」会让运维误判——以为这是个新部署的库。
+// 只有 created 覆盖了现有全部表，才说明这个库是这次建起来的。
+function schemaHint(schema?: MonitorSchema): string {
+  if (!schema?.tables) return "";
+  if (schema.created === 0) return "本次启动无结构变化";
+  if (schema.created >= schema.tables) return `本次新建 ${schema.created} 张（首次初始化）`;
+  return `新增 ${schema.created} 张（版本升级，共 ${schema.tables} 张）`;
+}
+
+// isWildcardListen：监听在通配地址上意味着局域网可达。这个录制代理没有认证，
+// 被外部当代理用会往流量库里灌无关请求。
+function isWildcardListen(addr?: string): boolean {
+  const a = (addr ?? "").trim();
+  return a.startsWith("0.0.0.0") || a.startsWith(":") || a.startsWith("[::]");
 }
 
 function statusTone(t: MonitorTask): "warn" | "ok" | "muted" {
@@ -214,11 +233,7 @@ export default function SystemMonitorPage() {
             <Metric
               label="数据表"
               value={data?.schema?.tables || "—"}
-              hint={
-                data?.schema?.created
-                  ? `本次新建 ${data.schema.created} 张（首次初始化）`
-                  : "本次启动无结构变化"
-              }
+              hint={schemaHint(data?.schema)}
             />
             <Metric
               label="迁移耗时"
@@ -269,8 +284,18 @@ export default function SystemMonitorPage() {
             <Metric
               label="流量录制"
               value={data ? (data.traffic.enabled ? "已启用" : "未启用") : "—"}
-              hint={data?.traffic.enabled ? `已录 ${data.traffic.exchanges ?? 0} 条` : "取证链会缺口"}
-              tone={data?.traffic.enabled ? "ok" : "warn"}
+              hint={
+                data?.traffic.enabled
+                  ? `已录 ${data.traffic.exchanges ?? 0} 条 · 监听 ${data.traffic.listen ?? "—"}`
+                  : "取证链会缺口"
+              }
+              tone={
+                !data
+                  ? "muted"
+                  : !data.traffic.enabled || isWildcardListen(data.traffic.listen)
+                    ? "warn"
+                    : "ok"
+              }
             />
             <Metric
               label="到期计划"

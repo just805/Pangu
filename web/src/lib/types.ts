@@ -2402,7 +2402,7 @@ export interface SystemMonitor {
   database: MonitorDatabase;
   schema: MonitorSchema;
   engine: MonitorEngine;
-  traffic: { enabled: boolean; exchanges?: number };
+  traffic: { enabled: boolean; exchanges?: number; listen?: string };
   scheduler: { due_plans?: number };
   warnings: MonitorWarning[];
 }

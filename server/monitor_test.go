@@ -113,6 +113,44 @@ func TestMonitorWarningsTrafficOff(t *testing.T) {
 	}
 }
 
+// 录制代理无认证：绑通配地址时局域网可当代理用，会往流量库里灌无关请求。
+// 实测见过「1 分钟 4332 条」的量级，所以这条必须能被认出来。
+func TestIsWildcardListen(t *testing.T) {
+	yes := []string{"0.0.0.0:8788", ":8788", "[::]:8788", " 0.0.0.0:1 "}
+	for _, a := range yes {
+		if !isWildcardListen(a) {
+			t.Errorf("%q 应判定为通配监听", a)
+		}
+	}
+	no := []string{"127.0.0.1:8788", "localhost:8788", "192.168.1.5:8788", ""}
+	for _, a := range no {
+		if isWildcardListen(a) {
+			t.Errorf("%q 不应判定为通配监听", a)
+		}
+	}
+}
+
+func TestMonitorWarningsWildcardProxy(t *testing.T) {
+	base := func(listen string) []monitorWarning {
+		return monitorWarnings(
+			map[string]any{"goroutines": 10},
+			map[string]any{"wait_count": int64(0)},
+			map[string]any{"activity_drops": int64(0), "tasks_queued": 0, "tasks_running": 0, "llm_ready": true},
+			map[string]any{"enabled": true, "exchanges": 4332, "listen": listen},
+		)
+	}
+	if got := base("127.0.0.1:8788"); len(got) != 0 {
+		t.Errorf("只绑本机时不该报警：%+v", got)
+	}
+	got := base("0.0.0.0:8788")
+	if len(got) != 1 || !strings.Contains(got[0].Title, "所有网卡") {
+		t.Fatalf("绑 0.0.0.0 时应报警：%+v", got)
+	}
+	if !strings.Contains(got[0].Detail, "0.0.0.0:8788") {
+		t.Errorf("提示应带上实际监听地址：%s", got[0].Detail)
+	}
+}
+
 func TestRound1(t *testing.T) {
 	cases := map[float64]float64{0: 0, 1.26: 1.3, 1.24: 1.2, 42.05: 42.1}
 	for in, want := range cases {
