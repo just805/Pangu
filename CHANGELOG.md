@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.1.32] - 2026-11-27
+
 ### 安全（API Key 权限范围，M-12 收尾）
 - **API Key 不再一律等同管理员**：新增 `scope` 三档 `read < write < admin`
   （`db/api_keys.scope`）。此前任何一把 Key 都能装宿主工具（任意包安装）、改自定义
