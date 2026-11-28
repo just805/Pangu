@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -187,6 +188,12 @@ type Traffic struct {
 	// 优先级高于代理池与全局出口：隐藏后缀只能走对应网络，不能落到普通出口。
 	hiddenTor atomic.Pointer[url.URL]
 	hiddenI2P atomic.Pointer[url.URL]
+	// usageMu guards the cached data-directory usage. Walking the tree is
+	// proportional to captured traffic, so the monitor page (5s poll) must not
+	// trigger it on every request. Writes invalidate the cache.
+	usageMu    sync.Mutex
+	usageAt    time.Time
+	usageCache Usage
 }
 
 // Open initializes the traffic tree, blob store and SQLite index under dir.
@@ -217,6 +224,19 @@ func Open(dir, addr string) (*Traffic, error) {
 		db.Close()
 		return nil, err
 	}
+	// 小型请求/响应正文内联在 index.sqlite 里（只有超过阈值的才落 blob），
+	// 所以索引库本身也是明文凭据载体。SQLite 新建文件默认 0644，这里显式收紧；
+	// WAL/SHM 会继承主库权限。
+	for _, p := range []string{index, index + "-wal", index + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil && !os.IsNotExist(err) {
+			log.Printf("[traffic] 收紧索引文件权限失败 %s：%v", p, err)
+		}
+	}
+	// 升级前写入的 blob/正文文件可能是 0644；后台一次性收紧。Windows 的文件
+	// 权限位对同机隔离没有实际意义，跳过以免无谓遍历。
+	if runtime.GOOS != "windows" {
+		go t.hardenExistingPermissions()
+	}
 
 	p, err := mproxy.NewProxy(&mproxy.Options{
 		Addr:        addr,
@@ -246,6 +266,25 @@ func Open(dir, addr string) (*Traffic, error) {
 	p.AddAddon(&sink{t: t})
 	t.proxy = p
 	return t, nil
+}
+
+// hardenExistingPermissions removes group/world permission bits from files
+// written by older versions. New writes are already 0600; this closes the
+// upgrade window without blocking startup or the recording proxy.
+func (t *Traffic) hardenExistingPermissions() {
+	_ = filepath.WalkDir(t.dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		info, statErr := d.Info()
+		if statErr != nil {
+			return nil
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			_ = os.Chmod(p, 0o600)
+		}
+		return nil
+	})
 }
 
 // initIndex applies the schema on a single pinned connection. Pinning is what
@@ -686,7 +725,8 @@ func (t *Traffic) spill(body []byte, contentType string) storedBody {
 	}
 	blobPath := filepath.Join(blobDir, h+".bin")
 	if _, err := os.Stat(blobPath); os.IsNotExist(err) {
-		if err := os.WriteFile(blobPath, body, 0o644); err != nil {
+		// 0600：流量正文含 Cookie/Token 明文，不能给同机其他用户读。
+		if err := os.WriteFile(blobPath, body, 0o600); err != nil {
 			log.Printf("[traffic] 写 blob %s 失败：%v", h, err)
 			return storedBody{inline: clipBytes(body, blobPreview), index: indexText()}
 		}
@@ -2280,7 +2320,7 @@ func SetupProxyLog(dataDir string) {
 	if st, err := os.Stat(path); err == nil && st.Size() > 64<<20 {
 		_ = os.Rename(path, path+".1")
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return
 	}

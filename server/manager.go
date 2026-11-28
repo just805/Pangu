@@ -362,13 +362,17 @@ type HiddenServiceConfig struct {
 
 // Settings keys the UI toggles at runtime.
 const (
-	settingTrafficCapture      = "traffic_capture"
-	settingAgentTrafficBinding = "agent_traffic_binding"
-	settingWebSearchOn         = "web_search_enabled"
-	settingWebSearchBackend    = "web_search_backend"
-	settingBraveKey            = "brave_search_api_key"
-	settingTavilyKey           = "tavily_search_api_key"
-	settingWebSearchProxy      = "web_search_proxy"
+	settingTrafficCapture = "traffic_capture"
+	// 流量保留策略（0 = 不启用）。录制是全量明文落盘，长期运行必须能按年龄/
+	// 容量自动清理；由 runTrafficRetention 每小时执行一次。
+	settingTrafficRetentionDays = "traffic_retention_days"
+	settingTrafficRetentionMB   = "traffic_retention_max_mb"
+	settingAgentTrafficBinding  = "agent_traffic_binding"
+	settingWebSearchOn          = "web_search_enabled"
+	settingWebSearchBackend     = "web_search_backend"
+	settingBraveKey             = "brave_search_api_key"
+	settingTavilyKey            = "tavily_search_api_key"
+	settingWebSearchProxy       = "web_search_proxy"
 	// settingGlobalProxy is the global egress proxy for all target traffic
 	// (http/https/socks5). Empty = direct. Distinct from web_search_proxy (which
 	// only routes the search backend) and the per-profile LLM proxy.
@@ -741,6 +745,10 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			log.Printf("[proxy] 清空隐藏服务代理失败: %v", err)
 		}
 	}
+	// 流量保留策略：默认关闭；配置了天数/容量后每小时清理一次。
+	if m.traffic != nil {
+		go m.runTrafficRetention()
+	}
 	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4)
 	// Reconcile the seeded browser MCP with the persisted capture state, so a
 	// restart with capture already on keeps Playwright routed through the proxy.
@@ -1084,6 +1092,62 @@ func (m *Manager) HostTools() []actool.CoreTool {
 func (m *Manager) Assets() *pgdb.AssetStore  { return m.assets }
 func (m *Manager) PG() *pgdb.DB              { return m.pg }
 func (m *Manager) Traffic() *traffic.Traffic { return m.traffic }
+
+// TrafficRetention returns the configured retention policy (days, max MB).
+// 0 means disabled for each dimension. Values are clamped so a bad stored value
+// can never turn into a runaway deletion (days > 10 years / > 1 PB).
+func (m *Manager) TrafficRetention() (days, maxMB int) {
+	if n, ok := settingInt(m.pg, settingTrafficRetentionDays); ok {
+		days = clampInt(n, 0, 3650)
+	}
+	if n, ok := settingInt(m.pg, settingTrafficRetentionMB); ok {
+		maxMB = clampInt(n, 0, 1_048_576)
+	}
+	return days, maxMB
+}
+
+// PruneTrafficNow runs one retention pass with the current settings. Safe to
+// call from the settings handler (after a save) and from the hourly loop; the
+// traffic store serializes deletions internally.
+func (m *Manager) PruneTrafficNow() {
+	tr := m.Traffic()
+	if tr == nil {
+		return
+	}
+	days, maxMB := m.TrafficRetention()
+	if days <= 0 && maxMB <= 0 {
+		return
+	}
+	opts := traffic.PruneOptions{MaxBytes: int64(maxMB) * 1024 * 1024}
+	if days > 0 {
+		opts.OlderThan = time.Now().AddDate(0, 0, -days)
+	}
+	res, err := tr.Prune(opts)
+	if err != nil {
+		log.Printf("[traffic] 保留策略清理失败：%v", err)
+		return
+	}
+	if res.Deleted > 0 {
+		log.Printf("[traffic] 保留策略清理：删除 %d 条，目录占用 %.1f MB（%d 文件）",
+			res.Deleted, float64(res.Usage.Bytes)/(1<<20), res.Usage.Files)
+	}
+}
+
+// runTrafficRetention is the hourly retention loop. It starts a couple of
+// minutes after boot (avoid competing with startup and the first tasks) and is
+// a no-op when both settings are 0.
+func (m *Manager) runTrafficRetention() {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	select {
+	case <-time.After(2 * time.Minute):
+	case <-ticker.C:
+	}
+	m.PruneTrafficNow()
+	for range ticker.C {
+		m.PruneTrafficNow()
+	}
+}
 
 // ProxyAddr returns the egress proxy address agents route target traffic through:
 //   - capture ON  → the recording MITM proxy (which itself exits via the global

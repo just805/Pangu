@@ -65,16 +65,16 @@ func (s *Server) systemMonitor(w http.ResponseWriter, r *http.Request) {
 		lastPauseMs = float64(ms.PauseNs[(ms.NumGC+255)%256]) / 1e6
 	}
 	process := map[string]any{
-		"version":        BuildVersion,
-		"go_version":     runtime.Version(),
-		"os":             runtime.GOOS,
-		"arch":           runtime.GOARCH,
-		"num_cpu":        runtime.NumCPU(),
-		"uptime_seconds": int64(now.Sub(processStart).Seconds()),
-		"goroutines":     runtime.NumGoroutine(),
-		"heap_alloc_mb":  round1(float64(ms.HeapAlloc) / (1 << 20)),
-		"heap_sys_mb":    round1(float64(ms.HeapSys) / (1 << 20)),
-		"gc_count":       ms.NumGC,
+		"version":          BuildVersion,
+		"go_version":       runtime.Version(),
+		"os":               runtime.GOOS,
+		"arch":             runtime.GOARCH,
+		"num_cpu":          runtime.NumCPU(),
+		"uptime_seconds":   int64(now.Sub(processStart).Seconds()),
+		"goroutines":       runtime.NumGoroutine(),
+		"heap_alloc_mb":    round1(float64(ms.HeapAlloc) / (1 << 20)),
+		"heap_sys_mb":      round1(float64(ms.HeapSys) / (1 << 20)),
+		"gc_count":         ms.NumGC,
 		"gc_last_pause_ms": round1(lastPauseMs),
 	}
 
@@ -145,12 +145,21 @@ func (s *Server) systemMonitor(w http.ResponseWriter, r *http.Request) {
 	trafficInfo := map[string]any{"enabled": false}
 	if tr := s.m.Traffic(); tr != nil {
 		n, _ := tr.Count()
+		u := tr.Usage()
+		days, maxMB := s.m.TrafficRetention()
 		trafficInfo = map[string]any{
 			"enabled": true, "exchanges": n,
 			// 监听地址必须可见：这个代理无认证，绑 0.0.0.0 时整个局域网都能拿它
 			// 当代理用（污染流量库、消耗带宽）。实测见过「1 分钟录 4332 条」这种
 			// 量级，排查时第一眼就要能看出到底是谁在连。
 			"listen": tr.ListenAddr(),
+			// 目录占用：只显示条数看不见磁盘压力，而流量是全量明文落盘的。
+			"usage_bytes":      u.Bytes,
+			"usage_files":      u.Files,
+			"index_bytes":      u.IndexBytes,
+			"blob_bytes":       u.BlobBytes,
+			"retention_days":   days,
+			"retention_max_mb": maxMB,
 		}
 	}
 	schedulerInfo := map[string]any{}
@@ -216,14 +225,27 @@ func monitorWarnings(process, database, engine, trafficInfo map[string]any) []mo
 			Title:  "流量录制未启用",
 			Detail: "未启用时区间流量取证不可用，finding 无法绑定请求响应证据。需要时在「系统配置」打开。",
 		})
-	} else if addr, _ := trafficInfo["listen"].(string); isWildcardListen(addr) {
-		// 实测背景：容器沙箱要连这个代理时必须绑 0.0.0.0，代价是它成了一个
-		// 无认证的开放代理——局域网内任何人都能用（污染流量库、白烧带宽）。
-		// 曾见过 1 分钟 4332 条的量级，第一嫌疑就是这里。
-		warn("流量录制代理对所有网卡开放",
-			"监听 "+addr+"：该代理无认证，局域网内任何人都能把它当代理用——会往你的流量库里灌入"+
-				"无关请求，也会占满带宽和磁盘。只有本机使用时改成 127.0.0.1:端口；"+
-				"确需容器/远程访问时，用防火墙只放行可信网段。")
+	} else {
+		if addr, _ := trafficInfo["listen"].(string); isWildcardListen(addr) {
+			// 实测背景：容器沙箱要连这个代理时必须绑 0.0.0.0，代价是它成了一个
+			// 无认证的开放代理——局域网内任何人都能用（污染流量库、白烧带宽）。
+			// 曾见过 1 分钟 4332 条的量级，第一嫌疑就是这里。
+			warn("流量录制代理对所有网卡开放",
+				"监听 "+addr+"：该代理无认证，局域网内任何人都能把它当代理用——会往你的流量库里灌入"+
+					"无关请求，也会占满带宽和磁盘。只有本机使用时改成 127.0.0.1:端口；"+
+					"确需容器/远程访问时，用防火墙只放行可信网段。")
+		}
+		// 流量全量明文落盘，且默认没有清理策略；占用越大，升级/备份/排障越容易
+		// 被磁盘拖死。5GB 是一个保守提示阈值，不自动删任何东西。
+		if b, ok := trafficInfo["usage_bytes"].(int64); ok && b > 5<<30 {
+			days, _ := trafficInfo["retention_days"].(int)
+			maxMB, _ := trafficInfo["retention_max_mb"].(int)
+			if days == 0 && maxMB == 0 {
+				warn("流量目录已超过 5GB 且未设置保留策略",
+					"当前占用 "+strconv.FormatFloat(float64(b)/(1<<30), 'f', 1, 64)+"GB。"+
+						"录制代理会持续落盘，长期运行会把磁盘占满；到「系统配置 → 流量保留」设置按天数或容量自动清理。")
+			}
+		}
 	}
 	return out
 }

@@ -1254,6 +1254,9 @@ export interface TrafficHost {
 // ---- App settings (runtime toggles) ----
 export interface Settings {
   traffic_capture: boolean;
+  // 流量保留策略：0=关闭；保存后立即执行一次清理，之后每小时一次。
+  traffic_retention_days?: number;
+  traffic_retention_max_mb?: number;
   agent_traffic_binding: boolean; // Agent 自动绑定流量证据，默认关闭；不影响人工绑定
   llm_record: boolean; // LLM 录制开关（默认关）；关闭时不记录任何 LLM 调用
   // Web search. brave_key_set / tavily_key_set reflect whether a key is stored
@@ -2402,7 +2405,18 @@ export interface SystemMonitor {
   database: MonitorDatabase;
   schema: MonitorSchema;
   engine: MonitorEngine;
-  traffic: { enabled: boolean; exchanges?: number; listen?: string };
+  traffic: {
+    enabled: boolean;
+    exchanges?: number;
+    listen?: string;
+    // 数据目录占用（流量全量明文落盘，磁盘压力必须可见）。
+    usage_bytes?: number;
+    usage_files?: number;
+    index_bytes?: number;
+    blob_bytes?: number;
+    retention_days?: number;
+    retention_max_mb?: number;
+  };
   scheduler: { due_plans?: number };
   warnings: MonitorWarning[];
 }

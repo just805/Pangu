@@ -8,7 +8,6 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -20,6 +19,9 @@ import { UpdateCard } from "./_components/update-card";
 
 export default function SystemSettingsPage() {
   const [trafficCapture, setTrafficCapture] = React.useState(false);
+  const [retentionDays, setRetentionDays] = React.useState("0");
+  const [retentionMB, setRetentionMB] = React.useState("0");
+  const [savingRetention, setSavingRetention] = React.useState(false);
   const [agentTrafficBinding, setAgentTrafficBinding] = React.useState(false);
   const [webSearch, setWebSearch] = React.useState(false);
   const [backend, setBackend] = React.useState("ddgs");
@@ -78,6 +80,8 @@ export default function SystemSettingsPage() {
 
   const apply = React.useCallback((s: Settings) => {
     setTrafficCapture(!!s.traffic_capture);
+    setRetentionDays(String(s.traffic_retention_days ?? 0));
+    setRetentionMB(String(s.traffic_retention_max_mb ?? 0));
     setAgentTrafficBinding(!!s.agent_traffic_binding);
     setWebSearch(!!s.web_search_enabled);
     setBackend(s.web_search_backend || "ddgs");
@@ -276,6 +280,28 @@ export default function SystemSettingsPage() {
       .then(apply)
       .catch(() => setTrafficCapture(!v)) // revert on failure
       .finally(() => setSaving(false));
+  };
+
+  const saveRetention = () => {
+    const days = Number(retentionDays);
+    const mb = Number(retentionMB);
+    if (!Number.isInteger(days) || days < 0 || days > 3650) {
+      toast.error("保留天数必须是 0–3650 的整数（0=不按天清理）");
+      return;
+    }
+    if (!Number.isInteger(mb) || mb < 0 || mb > 1048576) {
+      toast.error("容量上限必须是 0–1048576 的整数 MB（0=不按容量清理）");
+      return;
+    }
+    setSavingRetention(true);
+    api
+      .setSettings({ traffic_retention_days: days, traffic_retention_max_mb: mb })
+      .then((s) => {
+        apply(s);
+        toast.success(days > 0 || mb > 0 ? "已保存，正在按策略清理…" : "已关闭流量保留策略");
+      })
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingRetention(false));
   };
 
   const toggleInjectPlanner = (v: boolean) => {
@@ -511,6 +537,57 @@ export default function SystemSettingsPage() {
         <Card className="mb-4 break-inside-avoid md:mb-6">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
+              <TimerResetIcon className="size-4" />
+              流量保留
+            </CardTitle>
+            <CardDescription>
+              流量全量明文落盘，长期运行需要自动清理。按天数或容量（先到者生效）删除最旧的流量；
+              已绑定到漏洞的证据快照独立保存，不受影响。0 = 不启用。保存后立即清理一次，之后每小时检查。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label htmlFor="retention-days" className="font-normal text-muted-foreground text-xs">
+                  保留天数
+                </Label>
+                <Input
+                  id="retention-days"
+                  type="number"
+                  min={0}
+                  max={3650}
+                  value={retentionDays}
+                  onChange={(e) => setRetentionDays(e.target.value)}
+                  disabled={!loaded || savingRetention}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="retention-mb" className="font-normal text-muted-foreground text-xs">
+                  容量上限（MB）
+                </Label>
+                <Input
+                  id="retention-mb"
+                  type="number"
+                  min={0}
+                  max={1048576}
+                  value={retentionMB}
+                  onChange={(e) => setRetentionMB(e.target.value)}
+                  disabled={!loaded || savingRetention}
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-muted-foreground text-xs">1024 MB = 1 GB；建议至少保留 30 天或 10 GB。</p>
+              <Button size="sm" onClick={saveRetention} disabled={!loaded || savingRetention}>
+                {savingRetention ? "保存中…" : "保存"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
               <RadioTowerIcon className="size-4" />
               Agent 自动绑定流量
             </CardTitle>
@@ -606,9 +683,10 @@ export default function SystemSettingsPage() {
                 onCheckedChange={setHiddenEnabled}
               />
             </div>
-            <label className="flex flex-col gap-1 text-sm">
+            <label htmlFor="hidden-tor-proxy" className="flex flex-col gap-1 text-sm">
               <span>Tor 代理</span>
               <Input
+                id="hidden-tor-proxy"
                 autoComplete="off"
                 placeholder="socks5h://127.0.0.1:9050"
                 value={torProxyInput}
@@ -616,9 +694,10 @@ export default function SystemSettingsPage() {
                 onChange={(e) => setTorProxyInput(e.target.value)}
               />
             </label>
-            <label className="flex flex-col gap-1 text-sm">
+            <label htmlFor="hidden-i2p-proxy" className="flex flex-col gap-1 text-sm">
               <span>I2P 代理</span>
               <Input
+                id="hidden-i2p-proxy"
                 autoComplete="off"
                 placeholder="http://127.0.0.1:4444"
                 value={i2pProxyInput}
@@ -627,9 +706,10 @@ export default function SystemSettingsPage() {
               />
             </label>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <label className="flex flex-col gap-1 text-sm">
+              <label htmlFor="hidden-timeout" className="flex flex-col gap-1 text-sm">
                 <span>超时（秒，10–600）</span>
                 <Input
+                  id="hidden-timeout"
                   type="number"
                   min={10}
                   max={600}
@@ -638,9 +718,10 @@ export default function SystemSettingsPage() {
                   onChange={(e) => setHiddenTimeout(e.target.value)}
                 />
               </label>
-              <label className="flex flex-col gap-1 text-sm">
+              <label htmlFor="hidden-retries" className="flex flex-col gap-1 text-sm">
                 <span>重试次数（0–5）</span>
                 <Input
+                  id="hidden-retries"
                   type="number"
                   min={0}
                   max={5}
@@ -649,9 +730,10 @@ export default function SystemSettingsPage() {
                   onChange={(e) => setHiddenRetries(e.target.value)}
                 />
               </label>
-              <label className="flex flex-col gap-1 text-sm">
+              <label htmlFor="hidden-connect-timeout" className="flex flex-col gap-1 text-sm">
                 <span>连接超时（秒，5–120）</span>
                 <Input
+                  id="hidden-connect-timeout"
                   type="number"
                   min={5}
                   max={120}
@@ -1008,9 +1090,10 @@ export default function SystemSettingsPage() {
               />
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
-              <label className="flex flex-col gap-1 text-sm">
+              <label htmlFor="auto-finish-idle" className="flex flex-col gap-1 text-sm">
                 <span>连续无新增轮数（2–20）</span>
                 <Input
+                  id="auto-finish-idle"
                   type="number"
                   min={2}
                   max={20}
@@ -1020,9 +1103,10 @@ export default function SystemSettingsPage() {
                   onChange={(e) => setAutoFinishIdle(e.target.value)}
                 />
               </label>
-              <label className="flex flex-col gap-1 text-sm">
+              <label htmlFor="auto-finish-min" className="flex flex-col gap-1 text-sm">
                 <span>最少规划轮数（1–50）</span>
                 <Input
+                  id="auto-finish-min"
                   type="number"
                   min={1}
                   max={50}
@@ -1032,9 +1116,10 @@ export default function SystemSettingsPage() {
                   onChange={(e) => setAutoFinishMin(e.target.value)}
                 />
               </label>
-              <label className="flex flex-col gap-1 text-sm">
+              <label htmlFor="auto-finish-coverage" className="flex flex-col gap-1 text-sm">
                 <span>覆盖率阈值 %（0 = 关闭）</span>
                 <Input
+                  id="auto-finish-coverage"
                   type="number"
                   min={0}
                   max={100}
@@ -1044,9 +1129,10 @@ export default function SystemSettingsPage() {
                   onChange={(e) => setAutoFinishCoverage(e.target.value)}
                 />
               </label>
-              <label className="flex flex-col gap-1 text-sm">
+              <label htmlFor="auto-finish-max" className="flex flex-col gap-1 text-sm">
                 <span>最大规划轮数（0 = 不限）</span>
                 <Input
+                  id="auto-finish-max"
                   type="number"
                   min={0}
                   max={500}
@@ -1092,9 +1178,10 @@ export default function SystemSettingsPage() {
                 onCheckedChange={setIntentBudgetEnabled}
               />
             </div>
-            <label className="flex flex-col gap-1 text-sm">
+            <label htmlFor="intent-budget-tokens" className="flex flex-col gap-1 text-sm">
               <span>单意图 token 预算（500000–20000000）</span>
               <Input
+                id="intent-budget-tokens"
                 type="number"
                 min={500000}
                 max={20000000}
@@ -1126,9 +1213,10 @@ export default function SystemSettingsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
-            <label className="flex flex-col gap-1 text-sm">
+            <label htmlFor="task-budget-tokens" className="flex flex-col gap-1 text-sm">
               <span>任务 token 预算（0 = 关闭；1M–500M）</span>
               <Input
+                id="task-budget-tokens"
                 type="number"
                 min={0}
                 max={500000000}
@@ -1139,9 +1227,10 @@ export default function SystemSettingsPage() {
                 onChange={(e) => setTaskBudgetTokens(e.target.value)}
               />
             </label>
-            <label className="flex flex-col gap-1 text-sm">
+            <label htmlFor="task-budget-warn" className="flex flex-col gap-1 text-sm">
               <span>软提醒阈值（50–95%）</span>
               <Input
+                id="task-budget-warn"
                 type="number"
                 min={50}
                 max={95}

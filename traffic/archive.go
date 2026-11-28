@@ -166,7 +166,7 @@ func (t *Traffic) ImportArchive(dir string) (int64, error) {
 			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 				return 0, err
 			}
-			if err := os.WriteFile(destination, data, 0o644); err != nil {
+			if err := os.WriteFile(destination, data, 0o600); err != nil {
 				return 0, err
 			}
 		}

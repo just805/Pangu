@@ -26,6 +26,18 @@ function fmtUptime(sec: number): string {
   return `${m} 分`;
 }
 
+function fmtBytes(n?: number): string {
+  if (!n || n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(i === 0 || v >= 10 ? 0 : 1)} ${units[i]}`;
+}
+
 function Metric({
   label,
   value,
@@ -232,7 +244,7 @@ export default function SystemMonitorPage() {
             />
             <Metric
               label="数据表"
-              value={data?.schema?.tables || "—"}
+              value={data?.schema?.tables ?? "—"}
               hint={schemaHint(data?.schema)}
             />
             <Metric
@@ -295,6 +307,27 @@ export default function SystemMonitorPage() {
                   : !data.traffic.enabled || isWildcardListen(data.traffic.listen)
                     ? "warn"
                     : "ok"
+              }
+            />
+            <Metric
+              label="流量目录"
+              value={data?.traffic.enabled ? fmtBytes(data.traffic.usage_bytes) : "—"}
+              hint={
+                data?.traffic.enabled
+                  ? `${data.traffic.usage_files ?? 0} 文件 · ${
+                      data.traffic.retention_days || data.traffic.retention_max_mb
+                        ? `保留 ${data.traffic.retention_days ?? 0} 天 / ${data.traffic.retention_max_mb ?? 0} MB`
+                        : "未设置保留策略"
+                    }`
+                  : "流量录制未启用"
+              }
+              tone={
+                data?.traffic.enabled &&
+                (data.traffic.usage_bytes ?? 0) > 5 * 1024 ** 3 &&
+                !data.traffic.retention_days &&
+                !data.traffic.retention_max_mb
+                  ? "warn"
+                  : "muted"
               }
             />
             <Metric
