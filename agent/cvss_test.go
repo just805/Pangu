@@ -38,12 +38,12 @@ func TestParseCVSS31KnownScores(t *testing.T) {
 func TestParseCVSS31RejectsIncomplete(t *testing.T) {
 	bad := []string{
 		"",
-		"CVSS:3.1/AV:N/AC:L/PR:N",                                  // 缺项
-		"CVSS:3.1/AV:X/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",             // AV 非法
-		"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:Z/C:H/I:H/A:H",             // S 非法
-		"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/TE:X",        // 多了时间指标也无妨？这里只校验基础项，仍应能解析
-		"CVSS:2.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",             // 版本不对
-		"AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",                      // 缺版本前缀
+		"CVSS:3.1/AV:N/AC:L/PR:N", // 缺项
+		"CVSS:3.1/AV:X/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",      // AV 非法
+		"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:Z/C:H/I:H/A:H",      // S 非法
+		"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/TE:X", // 多了时间指标也无妨？这里只校验基础项，仍应能解析
+		"CVSS:2.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",      // 版本不对
+		"AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",               // 缺版本前缀
 	}
 	for _, v := range bad {
 		_, _, ok := ParseCVSS31(v)

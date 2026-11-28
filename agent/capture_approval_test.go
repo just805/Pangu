@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/just805/pangu/db"
-	"github.com/just805/pangu/guard"
-	"github.com/just805/pangu/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	"github.com/Autumn-27/norma/tool"
+	"github.com/just805/pangu/db"
+	"github.com/just805/pangu/guard"
+	"github.com/just805/pangu/intercept"
 )
 
 // Exercise the actual SDK event -> hook -> execution -> result path. No real

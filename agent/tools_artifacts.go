@@ -16,12 +16,8 @@ type ArtifactRecorder interface {
 	RecordArtifact(taskID, findingID int64, runDir, relPath, name, kind, sourceURL, note string) (*db.TaskArtifact, error)
 }
 
-// ListTaskArtifacts 是 host 注入的附件列表读取（agent 工具用）。nil = 不可用。
-var ListTaskArtifacts func(taskID string) ([]db.TaskArtifact, error)
-
-// FindingTaskID 由 host 注入：按漏洞 ID 反查所属任务（v0.4.20）。
-// reporter 的 chat 工具集没有任务上下文，靠模型传 finding_id 定位任务。
-var FindingTaskID func(findingID int64) (string, error)
+// ListTaskArtifacts / FindingTaskID 是 host 注入的附件列表与归属反查（agent 工具用）。
+// 未注入 = 不可用。实现与同步在 hooks.go。
 
 // artifactGuidance 注入 worker system prompt：截图与证据存档的时机纪律
 // （v0.5.0）。报告要"有照片"，前提是 worker 在正确时刻截图并登记。
@@ -115,17 +111,19 @@ func (t *ToolSet) listArtifacts() actool.CoreTool {
 			}
 			_ = json.Unmarshal(in, &a)
 			taskID := t.taskID
-			if taskID <= 0 && a.FindingID > 0 && FindingTaskID != nil {
-				if tid, err := FindingTaskID(a.FindingID); err == nil && tid != "" {
+			findTask := GetFindingTaskID()
+			if taskID <= 0 && a.FindingID > 0 && findTask != nil {
+				if tid, err := findTask(a.FindingID); err == nil && tid != "" {
 					if n, err := strconv.ParseInt(tid, 10, 64); err == nil {
 						taskID = n
 					}
 				}
 			}
-			if ListTaskArtifacts == nil || taskID <= 0 {
+			listArtifacts := GetListTaskArtifacts()
+			if listArtifacts == nil || taskID <= 0 {
 				return actool.Text("[]"), nil
 			}
-			list, err := ListTaskArtifacts(fmt.Sprint(taskID))
+			list, err := listArtifacts(fmt.Sprint(taskID))
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}

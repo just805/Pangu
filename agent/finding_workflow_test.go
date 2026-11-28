@@ -10,17 +10,17 @@ import (
 )
 
 func TestFindingWorkflowSharedAssemblyAndSwitch(t *testing.T) {
-	oldPolicy := FindingTrafficBindingEnabled
+	oldPolicy := GetFindingTrafficBindingEnabled()
 	oldResolve := GetToolResolve()
 	oldAugment := GetToolAugment()
 	t.Cleanup(func() {
-		FindingTrafficBindingEnabled = oldPolicy
+		SetFindingTrafficBindingEnabled(oldPolicy)
 		SetToolResolve(oldResolve)
 		SetToolAugment(oldAugment)
 	})
 	SetToolAugment(nil)
 	on := false
-	FindingTrafficBindingEnabled = func() bool { return on }
+	SetFindingTrafficBindingEnabled(func() bool { return on })
 	ts := NewToolSet(nil, "fixture")
 	SetToolResolve(func(_ context.Context, _ string, base []actool.CoreTool) []actool.CoreTool {
 		out := make([]actool.CoreTool, len(base))

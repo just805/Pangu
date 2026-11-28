@@ -15,15 +15,10 @@ import (
 // 每个 agent 的收尾提示词可在后台按需覆盖(存 agents.wrapup_prompt),留空则用这里的
 // 内置默认。仅【提示词正文】可编辑;禁用哪些工具、收尾自身给几轮预算属代码固定策略。
 
-// WrapupOverride, if set, returns the stored wrap-up prompt for an agent key and
-// whether a non-empty one exists. Wired by the server to the agents table (like
-// PromptOverride for system prompts). nil / empty → the built-in default is used.
-var WrapupOverride func(agentKey string) (string, bool)
-
-// WrapupMaxTurnsOverride, if set, returns the admin-configured turn budget for the
-// wrap-up phase of an agent and whether a positive one exists. Wired to the agents
-// table. nil / ≤0 → the built-in per-agent default (wrapupTurnDefaults) is used.
-var WrapupMaxTurnsOverride func(agentKey string) (int, bool)
+// WrapupOverride / WrapupMaxTurnsOverride are wired by the server to the agents
+// table (like PromptOverride for system prompts). Unset / empty / ≤0 → the
+// built-in default is used. They live in hooks.go behind a RWMutex so tests
+// swapping them cannot race a running worker.
 
 // 内置默认收尾提示词,按 agent key 索引。worker 复用历史上硬编码的 settleWrapUpPrompt
 // (定义在 worker.go),planner/mainagent 各有一版;未命中的(自定义 agent)走通用兜底。
@@ -70,10 +65,8 @@ func WrapupTurnsDefault(agentKey string) int {
 // resolveWrapup returns the effective wrap-up prompt: the DB override (if set and
 // non-empty) over the built-in default.
 func resolveWrapup(agentKey string) string {
-	if WrapupOverride != nil {
-		if t, ok := WrapupOverride(agentKey); ok && strings.TrimSpace(t) != "" {
-			return t
-		}
+	if t, ok := WrapupOverride(agentKey); ok && strings.TrimSpace(t) != "" {
+		return t
 	}
 	return WrapupDefault(agentKey)
 }
@@ -81,10 +74,8 @@ func resolveWrapup(agentKey string) string {
 // resolveWrapupTurns returns the effective wrap-up turn budget: a positive DB
 // override over the built-in per-agent default.
 func resolveWrapupTurns(agentKey string) int {
-	if WrapupMaxTurnsOverride != nil {
-		if v, ok := WrapupMaxTurnsOverride(agentKey); ok && v > 0 {
-			return v
-		}
+	if v, ok := WrapupMaxTurnsOverride(agentKey); ok && v > 0 {
+		return v
 	}
 	return WrapupTurnsDefault(agentKey)
 }
@@ -131,10 +122,7 @@ func wrapupSettlement(agentKey string, disabledTools []string) *harness.Settleme
 
 // WrapupTaskTimeoutOverride / …TurnsOverride：任务超时收尾词与轮数的 DB 覆盖
 // （wire 到 agents.task_timeout_wrapup_prompt / _max_turns，仅 worker/planner）。
-var (
-	WrapupTaskTimeoutOverride      func(agentKey string) (string, bool)
-	WrapupTaskTimeoutTurnsOverride func(agentKey string) (int, bool)
-)
+// 实现与同步在 hooks.go。
 
 var taskTimeoutWrapupDefaults = map[string]string{
 	"worker":  workerTaskTimeoutDefault,
@@ -176,19 +164,15 @@ func TaskTimeoutWrapupDefault(agentKey string) string {
 // resolveTaskTimeoutWrapup：DB 覆盖(非空) > 内置默认。空串表示该 agent 无任务超时词
 // （非 worker/planner），此时调用方应回退 per-run 词。
 func resolveTaskTimeoutWrapup(agentKey string) string {
-	if WrapupTaskTimeoutOverride != nil {
-		if t, ok := WrapupTaskTimeoutOverride(agentKey); ok && strings.TrimSpace(t) != "" {
-			return t
-		}
+	if t, ok := WrapupTaskTimeoutOverride(agentKey); ok && strings.TrimSpace(t) != "" {
+		return t
 	}
 	return TaskTimeoutWrapupDefault(agentKey)
 }
 
 func resolveTaskTimeoutTurns(agentKey string) int {
-	if WrapupTaskTimeoutTurnsOverride != nil {
-		if v, ok := WrapupTaskTimeoutTurnsOverride(agentKey); ok && v > 0 {
-			return v
-		}
+	if v, ok := WrapupTaskTimeoutTurnsOverride(agentKey); ok && v > 0 {
+		return v
 	}
 	return resolveWrapupTurns(agentKey) // 默认沿用 per-run 轮数
 }

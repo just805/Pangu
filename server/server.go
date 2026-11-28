@@ -226,36 +226,36 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			return t, true
 		})
 		// Wire DB-stored wrap-up (settlement) prompts. Empty column → built-in default.
-		agent.WrapupOverride = func(key string) (string, bool) {
+		agent.SetWrapupOverride(func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil || a.WrapupPrompt == "" {
 				return "", false
 			}
 			return a.WrapupPrompt, true
-		}
+		})
 		// Wire DB-stored wrap-up turn budgets. 0 / missing → built-in per-agent default.
-		agent.WrapupMaxTurnsOverride = func(key string) (int, bool) {
+		agent.SetWrapupMaxTurnsOverride(func(key string) (int, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil || a.WrapupMaxTurns <= 0 {
 				return 0, false
 			}
 			return a.WrapupMaxTurns, true
-		}
+		})
 		// Wire DB-stored TASK-TIMEOUT wrap-up prompt/turns (worker/planner). Empty/0 → default.
-		agent.WrapupTaskTimeoutOverride = func(key string) (string, bool) {
+		agent.SetWrapupTaskTimeoutOverride(func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil || a.TaskTimeoutWrapupPrompt == "" {
 				return "", false
 			}
 			return a.TaskTimeoutWrapupPrompt, true
-		}
-		agent.WrapupTaskTimeoutTurnsOverride = func(key string) (int, bool) {
+		})
+		agent.SetWrapupTaskTimeoutTurnsOverride(func(key string) (int, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil || a.TaskTimeoutWrapupMaxTurns <= 0 {
 				return 0, false
 			}
 			return a.TaskTimeoutWrapupMaxTurns, true
-		}
+		})
 		wireAgentAugment(m.pg, s.skillDir, s.hostTools)        // 可见 skills/MCP + 流量/编排 host 工具装配进 agent 工具集
 		agent.SetCweSkillIndex(BuildCweSkillIndex(s.skillDir)) // CWE→方法论 skill 联动（漏洞情报工具输出 related_skills）
 		var domainReg map[string]actool.CoreTool

@@ -48,19 +48,19 @@ func TestValidateFindingEvidence(t *testing.T) {
 // 注入（关闭自动绑定时上报者照样要过证据门槛），reporter 额外获得报告结构补充，
 // 没有上报工具的 agent 不注入。
 func TestEvidenceGuidanceInjected(t *testing.T) {
-	oldPolicy := FindingTrafficBindingEnabled
-	t.Cleanup(func() { FindingTrafficBindingEnabled = oldPolicy })
+	oldPolicy := GetFindingTrafficBindingEnabled()
+	t.Cleanup(func() { SetFindingTrafficBindingEnabled(oldPolicy) })
 	ts := NewToolSet(nil, "fixture")
 	findingTool := []actool.CoreTool{ts.addFinding()}
 
 	for _, enabled := range []bool{false, true} {
-		FindingTrafficBindingEnabled = func() bool { return enabled }
+		SetFindingTrafficBindingEnabled(func() bool { return enabled })
 		_, g := findingWorkflowTools("worker", findingTool)
 		if !strings.Contains(g, "L3") || !strings.Contains(g, "外部运维约束") || !strings.Contains(g, "观察 ≠ 推断") {
 			t.Fatalf("binding=%v: evidence discipline missing: %q", enabled, g)
 		}
 	}
-	FindingTrafficBindingEnabled = func() bool { return true }
+	SetFindingTrafficBindingEnabled(func() bool { return true })
 	// reporter 的报告结构补充只在它有 update_finding_report 时注入。
 	fakeUpdate := writeTool("update_finding_report", "fake", map[string]any{"type": "object", "properties": map[string]any{}},
 		func(context.Context, json.RawMessage) (actool.Result, error) { return actool.Text("ok"), nil })

@@ -65,7 +65,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 		idxCacheAt = time.Now()
 		return idxDesc
 	}
-	agent.SkillIndexBlock = func(agentKey string) string {
+	agent.SetSkillIndexBlock(func(agentKey string) string {
 		a, err := pg.GetAgentByKey(agentKey)
 		if err != nil || a == nil {
 			return ""
@@ -84,7 +84,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 		}
 		b.WriteString("调用方式：Skill(name=\"<名称>\")。技能内有验证口径/假点清单/报告模板，先加载可避免漏检与误报。")
 		return b.String()
-	}
+	})
 	agent.SetToolAugment(func(ctx context.Context, agentKey string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
 		a, err := pg.GetAgentByKey(agentKey)
 		if err != nil || a == nil {
@@ -287,12 +287,12 @@ func seedPrompts(pg *db.DB) {
 // flag and, if kept, wrapped so the model sees the DB-overridden description/schema
 // and缺省入参 get injected. MCP/skill/host tools have no row and pass through.
 func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
-	agent.FindingTrafficBindingEnabled = func() bool { return pg.GetBool(settingAgentTrafficBinding, false) }
+	agent.SetFindingTrafficBindingEnabled(func() bool { return pg.GetBool(settingAgentTrafficBinding, false) })
 	// 证据附件列表（v0.4.9）：agent 的 list_artifacts 工具读取本任务已登记附件。
-	agent.ListTaskArtifacts = func(taskID string) ([]db.TaskArtifact, error) { return pg.ListTaskArtifacts(taskID) }
+	agent.SetListTaskArtifacts(func(taskID string) ([]db.TaskArtifact, error) { return pg.ListTaskArtifacts(taskID) })
 	// reporter 的 chat 会话没有任务上下文（v0.4.20）：允许工具按 finding_id
 	// 反查所属任务，避免 list_artifacts 永远返回空。
-	agent.FindingTaskID = func(findingID int64) (string, error) {
+	agent.SetFindingTaskID(func(findingID int64) (string, error) {
 		f, err := pg.GetFinding(findingID)
 		if err != nil {
 			return "", err
@@ -301,7 +301,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 			return "", fmt.Errorf("finding %d 无所属任务", findingID)
 		}
 		return strconv.FormatInt(*f.TaskID, 10), nil
-	}
+	})
 	// reporter 需要看附件清单来引用截图（worker 由 builtinToolsByAgent 自动绑定）。
 	if err := pg.AddAgentToToolBinding("reporter", []string{"list_artifacts"}); err != nil {
 		log.Printf("[tools] reporter 绑定 list_artifacts 失败: %v", err)

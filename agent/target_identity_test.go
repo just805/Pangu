@@ -53,15 +53,15 @@ func TestTargetIdentityDropScripts(t *testing.T) {
 // 这些话术复现进它写的脚本/请求（例如测试 marker 命名），平台名跟着落盘。
 func TestTargetIdentitySystemPrompts(t *testing.T) {
 	for name, s := range map[string]string{
-		"worker 模板":          workerDefaultTmpl,
-		"planner 模板":         plannerDefaultTmpl,
-		"mainagent 模板":       mainAgentDefaultTmpl,
-		"scannerFirst":       scannerFirstGuidance,
-		"skillRouting":       skillRoutingGuidance,
-		"coverageMatrix":     coverageMatrixPlannerGuidance,
-		"scopeVerify":        scopeVerifyPlannerGuidance,
-		"execFaceWorker":     execFaceWorkerGuidance,
-		"execFacePlanner":    execFacePlannerGuidance,
+		"worker 模板":           workerDefaultTmpl,
+		"planner 模板":          plannerDefaultTmpl,
+		"mainagent 模板":        mainAgentDefaultTmpl,
+		"scannerFirst":        scannerFirstGuidance,
+		"skillRouting":        skillRoutingGuidance,
+		"coverageMatrix":      coverageMatrixPlannerGuidance,
+		"scopeVerify":         scopeVerifyPlannerGuidance,
+		"execFaceWorker":      execFaceWorkerGuidance,
+		"execFacePlanner":     execFacePlannerGuidance,
 		"egressProxyGuidance": egressProxyGuidance("127.0.0.1:8788"),
 	} {
 		targetIdentityCheck(t, "提示语 "+name, s)

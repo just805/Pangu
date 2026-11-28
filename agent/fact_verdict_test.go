@@ -10,16 +10,16 @@ import (
 
 func TestNormalizeFactVerdict(t *testing.T) {
 	cases := map[string]string{
-		"":                    FactConfirmed,
-		"confirmed":           FactConfirmed,
-		"  Confirmed ":        FactConfirmed,
-		"ruled_out":           FactRuledOut,
-		"Ruled-Out":           FactRuledOut,
-		"已排除":                 FactRuledOut,
-		"open_proof_gap":      FactOpenProofGap,
-		"未验证":                 FactOpenProofGap,
-		"待验证":                 FactOpenProofGap,
-		"nonsense":            "", // 无法识别时返回空串，由调用方报错
+		"":               FactConfirmed,
+		"confirmed":      FactConfirmed,
+		"  Confirmed ":   FactConfirmed,
+		"ruled_out":      FactRuledOut,
+		"Ruled-Out":      FactRuledOut,
+		"已排除":            FactRuledOut,
+		"open_proof_gap": FactOpenProofGap,
+		"未验证":            FactOpenProofGap,
+		"待验证":            FactOpenProofGap,
+		"nonsense":       "", // 无法识别时返回空串，由调用方报错
 	}
 	for in, want := range cases {
 		if got := normalizeFactVerdict(in); got != want {

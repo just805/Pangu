@@ -34,7 +34,6 @@ func nowStr() string { return time.Now().Format("2006-01-02 15:04:05 MST") }
 // 被显式提醒就几乎不会主动调（实测 56k 次调用里 Skill 触发 8 次，任务 18 零次
 // ——与当年宿主工具"装了没用起来"同一病根，解法也同款：清单进 system prompt）。
 // 返回空串 = 该 agent 没绑技能，不加块。
-var SkillIndexBlock func(agentKey string) string
 
 func renderSystem(agentKey, def string, vars any) string {
 	tmpl := def
@@ -47,10 +46,8 @@ func renderSystem(agentKey, def string, vars any) string {
 	} else if out, err := renderTmpl(def, vars); err == nil {
 		body = out
 	}
-	if SkillIndexBlock != nil {
-		if blk := SkillIndexBlock(agentKey); blk != "" {
-			body += "\n\n" + blk
-		}
+	if blk := SkillIndexBlock(agentKey); blk != "" {
+		body += "\n\n" + blk
 	}
 	return body
 }

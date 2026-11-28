@@ -29,9 +29,9 @@ import (
 // 完全不是上游不响应。重启服务能恢复，所以先前一直误判为上游/网络问题。
 func TestCompactorTryStartDoesNotSelfDeadlock(t *testing.T) {
 	c := &Compactor{
-		cooldown: 60 * time.Second,
-		running:   map[int64]bool{},
-		lastRun:   map[int64]time.Time{},
+		cooldown:    60 * time.Second,
+		running:     map[int64]bool{},
+		lastRun:     map[int64]time.Time{},
 		consecFails: map[int64]int{},
 	}
 	const expID = int64(7)

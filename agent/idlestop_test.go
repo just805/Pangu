@@ -337,7 +337,7 @@ func TestIdleStopWriteAfterNudgeResets(t *testing.T) {
 		h.PostToolUse(context.Background(), "Bash", nil, nil, false)
 	}
 	h.PreToolUse(context.Background(), "Bash", nil) // nudge
-	fw.addFacts(1)                                   // 模型写回了
+	fw.addFacts(1)                                  // 模型写回了
 	h.PostToolUse(context.Background(), "record_fact", nil, nil, false)
 	// 再推进多轮也不该 cancel（计数已重置）。
 	for i := 0; i < idleStopPreventRounds+2; i++ {

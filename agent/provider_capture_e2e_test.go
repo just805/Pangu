@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/just805/pangu/llmrec"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/just805/pangu/llmrec"
 )
 
 // End-to-end through a real norma provider: the Capture rides the context into

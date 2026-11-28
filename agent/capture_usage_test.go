@@ -6,9 +6,9 @@ import (
 	"iter"
 	"testing"
 
-	"github.com/just805/pangu/db"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/just805/pangu/db"
 )
 
 type captureUsageProvider struct {

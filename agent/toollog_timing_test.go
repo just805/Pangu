@@ -103,7 +103,8 @@ type blockingHookRunner struct{}
 func (b *blockingHookRunner) PreToolUse(ctx context.Context, name string, input []byte) (bool, string, []byte) {
 	return true, "denied", input
 }
-func (b *blockingHookRunner) PostToolUse(ctx context.Context, name string, input, result []byte, isErr bool) {}
+func (b *blockingHookRunner) PostToolUse(ctx context.Context, name string, input, result []byte, isErr bool) {
+}
 func (b *blockingHookRunner) Stop(ctx context.Context, messages []llm.Message) (bool, []string, string) {
 	return false, nil, ""
 }

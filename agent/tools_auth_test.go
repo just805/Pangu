@@ -12,9 +12,9 @@ func TestParseAuthEntriesRecognizesCommonKeys(t *testing.T) {
 	raw := []map[string]any{
 		{"type": "wordpress", "username": "admin", "password": "p@ss"},
 		{"type": "bearer", "token": "abc.def.ghi"},
-		{"user": "bob", "pass": "secret"},      // 键名变体
+		{"user": "bob", "pass": "secret"},    // 键名变体
 		{"token": "tk", "description": "后台"}, // 带说明
-		{"nothing": "here"},                   // 无可用字段 → 不算一条
+		{"nothing": "here"},                  // 无可用字段 → 不算一条
 	}
 	entries := parseAuthEntries(raw)
 	// 4 条有效凭据（wordpress / bearer / bob / tk），第 5 条无可用字段被跳过。

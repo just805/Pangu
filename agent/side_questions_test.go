@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/just805/pangu/db"
-	"github.com/just805/pangu/sidequestion"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
+	"github.com/just805/pangu/db"
+	"github.com/just805/pangu/sidequestion"
 )
 
 type sideAgentProvider struct {

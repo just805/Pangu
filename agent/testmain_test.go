@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/just805/pangu/db"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/just805/pangu/db"
 )
 
 // TestMain acquires a PostgreSQL advisory lock (7337741002) for the entire
