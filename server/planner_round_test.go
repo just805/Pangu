@@ -82,9 +82,9 @@ func TestPlannerRoundLimitOverride(t *testing.T) {
 	if plannerRoundLimit() != plannerRoundTimeout {
 		t.Errorf("default limit = %v, want %v", plannerRoundLimit(), plannerRoundTimeout)
 	}
-	old := plannerRoundTimeoutOverride
-	plannerRoundTimeoutOverride = 3 * time.Second
-	t.Cleanup(func() { plannerRoundTimeoutOverride = old })
+	old := plannerRoundTimeoutOverride.Load()
+	plannerRoundTimeoutOverride.Store(int64(3 * time.Second))
+	t.Cleanup(func() { plannerRoundTimeoutOverride.Store(old) })
 	if plannerRoundLimit() != 3*time.Second {
 		t.Errorf("overridden limit = %v, want 3s", plannerRoundLimit())
 	}

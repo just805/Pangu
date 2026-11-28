@@ -235,7 +235,7 @@ func Open(dir, addr string) (*Traffic, error) {
 	// 升级前写入的 blob/正文文件可能是 0644；后台一次性收紧。Windows 的文件
 	// 权限位对同机隔离没有实际意义，跳过以免无谓遍历。
 	if runtime.GOOS != "windows" {
-		go t.hardenExistingPermissions()
+		go hardenExistingPermissions(dir)
 	}
 
 	p, err := mproxy.NewProxy(&mproxy.Options{
@@ -271,8 +271,12 @@ func Open(dir, addr string) (*Traffic, error) {
 // hardenExistingPermissions removes group/world permission bits from files
 // written by older versions. New writes are already 0600; this closes the
 // upgrade window without blocking startup or the recording proxy.
-func (t *Traffic) hardenExistingPermissions() {
-	_ = filepath.WalkDir(t.dir, func(p string, d fs.DirEntry, err error) error {
+//
+// dir is passed explicitly (not read from t.dir): tests mutate t.dir to simulate
+// filesystem failures, and a background goroutine reading the field would race
+// with that write (`go test -race ./traffic` caught it).
+func hardenExistingPermissions(dir string) {
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d == nil || d.IsDir() {
 			return nil
 		}

@@ -972,12 +972,13 @@ const plannerRoundTimeout = 15 * time.Minute
 
 // plannerRoundTimeoutOverride 让测试能用秒级上限验证「规划轮卡住也不拖死
 // planner 循环」。生产路径不设置它（保持 plannerRoundTimeout）。
-var plannerRoundTimeoutOverride time.Duration
+// atomic：残留 planner 协程可能在测试改写它时正在读（race 门禁抓到过）。
+var plannerRoundTimeoutOverride atomic.Int64
 
 // plannerRoundLimit 返回本轮规划生效的墙钟上限。
 func plannerRoundLimit() time.Duration {
-	if plannerRoundTimeoutOverride > 0 {
-		return plannerRoundTimeoutOverride
+	if d := plannerRoundTimeoutOverride.Load(); d > 0 {
+		return time.Duration(d)
 	}
 	return plannerRoundTimeout
 }
