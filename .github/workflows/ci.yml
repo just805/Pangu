@@ -119,7 +119,32 @@ jobs:
           echo "PANGU_PG_DSN=postgres://pangu:pangu-pass@127.0.0.1:5432/$DB?sslmode=disable" >> "$GITHUB_ENV"
       - name: Test core packages with race detector
         run: |
+          set -o pipefail
           go test -race -p 1 -count=1 -timeout 45m \
+            ./db ./guard ./traffic ./evidence ./intercept ./agent ./server 2>&1 | tee /tmp/race-test.log
+
+      # -race + 共享 PG 下，Server.New 会恢复上一测试残留的任务协程，测试结束时
+      # TempDir 清理可能撞上它们写文件（unlinkat: directory not empty）。这不是
+      # 数据竞态：日志里出现 WARNING: DATA RACE 时直接失败、不重试；只有非竞态
+      # 失败才换新库重跑失败用例一次（与 backend 的 flaky guard 同口径）。
+      - name: Retry non-race failures (flaky guard)
+        if: failure()
+        run: |
+          if grep -q "WARNING: DATA RACE" /tmp/race-test.log; then
+            echo "检测到数据竞态，失败不可重试"
+            exit 1
+          fi
+          FAILED=$(grep -oE '^--- FAIL: [^ ]+' /tmp/race-test.log | sed 's/^--- FAIL: //' | sort -u | paste -sd'|' -)
+          if [ -z "$FAILED" ]; then
+            echo "无 --- FAIL 行（构建/panic 类失败），不重试"
+            exit 1
+          fi
+          DB="pangu_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_race_retry"
+          PGPASSWORD=pangu-pass psql -h 127.0.0.1 -U pangu -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE \"$DB\" OWNER pangu"
+          export PANGU_PG_DSN="postgres://pangu:pangu-pass@127.0.0.1:5432/$DB?sslmode=disable"
+          echo "flaky guard retry: $FAILED（新库 $DB）"
+          go test -race -p 1 -count=1 -timeout 45m -run "($FAILED)" \
             ./db ./guard ./traffic ./evidence ./intercept ./agent ./server
 
   frontend:
