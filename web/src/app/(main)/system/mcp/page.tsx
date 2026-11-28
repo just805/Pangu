@@ -181,12 +181,12 @@ export default function MCPPage() {
       .mcpServers()
       .then((ss) => {
         setServers(ss);
-        ss.forEach((s) =>
-          api
+        ss.forEach((s) => {
+          void api
             .resourceVisibility("mcp", s.id)
             .then((ids) => setVisibility((v) => ({ ...v, [s.id]: ids })))
-            .catch(() => { /* 忽略失败，保持当前展示 */ }),
-        );
+            .catch(() => { /* 忽略失败，保持当前展示 */ });
+        });
       })
       .catch(() => { /* 忽略失败，保持当前展示 */ });
   }, []);
@@ -254,7 +254,7 @@ export default function MCPPage() {
     });
     setTab("config");
     setOpen(true);
-    loadTools(s.id);
+    void loadTools(s.id);
   }
 
   async function loadTools(id: number) {
@@ -547,7 +547,12 @@ export default function MCPPage() {
         {servers.map((s) => (
           <Card
             key={s.id}
-            onClick={() => openEdit(s)}
+            onClick={(e) => {
+              // 只响应卡片空白处；按钮/开关/勾选框的点击不应打开编辑弹窗。
+              const el = e.target as HTMLElement;
+              if (el.closest("button, input, label, [role='switch']")) return;
+              openEdit(s);
+            }}
             className="cursor-pointer gap-3 transition hover:border-primary/60 hover:shadow-sm"
           >
             <CardHeader>
@@ -557,11 +562,7 @@ export default function MCPPage() {
                 <Badge variant="outline" className="uppercase">
                   {s.transport}
                 </Badge>
-                <div
-                  className="ml-auto flex items-center gap-2"
-                  onClick={(e) => e.stopPropagation()}
-                  onKeyDown={(e) => e.stopPropagation()}
-                >
+                <div className="ml-auto flex items-center gap-2">
                   <Switch
                     checked={s.enabled}
                     onCheckedChange={() => toggleEnabled(s)}
@@ -582,11 +583,7 @@ export default function MCPPage() {
               <p className="text-muted-foreground text-sm">
                 {s.tools && s.tools.length > 0 ? `${s.tools.length} 个工具` : "尚未发现工具"}
               </p>
-              <div
-                className="grid gap-2"
-                onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => e.stopPropagation()}
-              >
+              <div className="grid gap-2">
                 <span className="text-muted-foreground text-xs">可见性（按 Agent 授权）</span>
                 <div className="flex flex-wrap gap-x-4 gap-y-2">
                   {agents.map((a) => (

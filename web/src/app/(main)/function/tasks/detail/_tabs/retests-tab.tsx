@@ -58,6 +58,7 @@ export function RetestsTab({ taskId }: { taskId: string }) {
   const [batchTotal, setBatchTotal] = React.useState(0);
   const cancelBatch = React.useRef(false);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshVersion 只作为重取触发器，不参与请求参数
   React.useEffect(() => {
     let disposed = false;
     api

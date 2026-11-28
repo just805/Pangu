@@ -44,7 +44,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+import { cn, firstNonEmpty } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type { LLMRecordItem, LLMRecordDetail, LLMTask } from "@/lib/types";
 
@@ -143,7 +143,7 @@ export default function LLMRecordsPage() {
   // 不含工具 schema，响应里也没有 tool_use 块。
   const [rawView, setRawView] = React.useState(false);
 
-  const hasRaw = !!(detail?.raw_request || detail?.raw_response);
+  const hasRaw = firstNonEmpty(detail?.raw_request, detail?.raw_response).length > 0;
   // 开关保持用户选择，但切到一条无原文的旧记录时自动落回解析视图，而不是显示空白。
   const showRaw = rawView && hasRaw;
   // 原文请求体是 JSON，pretty-print 只改排版不改语义，便于阅读；原文响应是 SSE
@@ -193,6 +193,7 @@ export default function LLMRecordsPage() {
 
   // Reset page on filter change（依赖必须列全——漏了会让改筛选后停在旧页码，
   // 列表看似为空，曾被写成空依赖数组只执行一次）。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 三个筛选值只作为重置触发器，不参与计算
   React.useEffect(() => {
     setPage(0);
   }, [model, sessionQ, pickedTask]);
@@ -512,7 +513,7 @@ export default function LLMRecordsPage() {
               <div className="flex min-h-0 min-w-0 flex-col">
                 <div className="flex items-center gap-2 border-b py-0.5 pr-1.5 pl-3 font-medium text-[11px] text-muted-foreground">
                   <span>Request{showRaw && " · 原文"}</span>
-                  <CopyButton text={reqText || ""} />
+                  <CopyButton text={reqText ?? ""} />
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto">
                   {detailLoading ? (
@@ -522,7 +523,7 @@ export default function LLMRecordsPage() {
                     </div>
                   ) : (
                     <pre className="whitespace-pre-wrap break-all p-3 font-mono text-xs">
-                      {reqText || "（空）"}
+                      {firstNonEmpty(reqText, "（空）")}
                     </pre>
                   )}
                 </div>
@@ -530,7 +531,7 @@ export default function LLMRecordsPage() {
               <div className="flex min-h-0 min-w-0 flex-col">
                 <div className="flex items-center gap-2 border-b py-0.5 pr-1.5 pl-3 font-medium text-[11px] text-muted-foreground">
                   <span>Response{showRaw && " · 原文（SSE）"}</span>
-                  <CopyButton text={respText || ""} />
+                  <CopyButton text={respText ?? ""} />
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto">
                   {detailLoading ? (
@@ -543,7 +544,7 @@ export default function LLMRecordsPage() {
                       "whitespace-pre-wrap break-all p-3 font-mono text-xs",
                       selected.status !== "ok" && "text-red-600 dark:text-red-400",
                     )}>
-                      {respText || "（空）"}
+                      {firstNonEmpty(respText, "（空）")}
                     </pre>
                   )}
                 </div>

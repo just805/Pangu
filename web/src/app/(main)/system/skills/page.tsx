@@ -350,11 +350,12 @@ export default function SkillsPage() {
     api.missingSkills().then(setMissing).catch(() => { /* 忽略失败，保持当前展示 */ });
     api.skills().then((ss) => {
       setSkills(ss);
-      ss.forEach((s) =>
-        api.skillVisibility(s.name)
+      ss.forEach((s) => {
+        void api
+          .skillVisibility(s.name)
           .then((ids) => setVisibility((v) => ({ ...v, [s.name]: ids })))
-          .catch(() => { /* 忽略失败，保持当前展示 */ }),
-      );
+          .catch(() => { /* 忽略失败，保持当前展示 */ });
+      });
     }).catch(() => { /* 忽略失败，保持当前展示 */ });
   }, []);
 
@@ -385,7 +386,7 @@ export default function SkillsPage() {
   function onUploadPick(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     e.target.value = ""; // reset so picking the same file again re-fires
-    if (f) uploadZip(f);
+    if (f) void uploadZip(f);
   }
 
   React.useEffect(() => {

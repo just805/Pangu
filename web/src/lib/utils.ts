@@ -5,6 +5,16 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+// firstNonEmpty 返回第一个非空字符串。用于「空串也应回退」的场景（备注、描述、
+// 用户名等）：直接写 `a || b` 语义正确但会被 lint 的 useNullishCoalescing 判为
+// 应改 `??`，而 `??` 不会对空串回退。集中到一个 helper 里，调用点保持可读。
+export function firstNonEmpty(...values: Array<string | null | undefined>): string {
+  for (const v of values) {
+    if (v) return v;
+  }
+  return "";
+}
+
 // 抽屉/对话框(Sheet/Dialog)的 onInteractOutside 关闭判定辅助。
 //
 // 背景:抽屉内的 Radix 弹层(Select 下拉、DropdownMenu、Popover 等)会 portal 到抽屉

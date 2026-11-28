@@ -38,6 +38,7 @@ import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import { usePageVisible } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
+import { firstNonEmpty } from "@/lib/utils";
 
 // 大内容弹窗（数据预览/图片放大）拆独立 chunk：只有用户点开时才拉取。
 const ArtifactDataViewerDialog = dynamic(
@@ -1395,7 +1396,7 @@ function TaskAuthCard({ taskId }: { taskId: string }) {
           </Button>
         </CardTitle>
         <CardDescription>
-          登录接口 {cfg.method} {cfg.login_url} · 用户名 {cfg.username || "—"}
+          登录接口 {cfg.method} {cfg.login_url} · 用户名 {firstNonEmpty(cfg.username, "—")}
           {cfg.has_password ? " · 密码已保存（不回显）" : ""}
           {cfg.has_totp ? " · 含 TOTP" : ""}。worker 会用它在会话内登录后再测试。
         </CardDescription>
@@ -1862,7 +1863,7 @@ function TaskArtifactsCard({ taskId }: { taskId: string }) {
         open={!!preview}
         onClose={() => setPreview(null)}
         src={preview ? fullUrl(preview.id) : ""}
-        title={preview?.note || preview?.name || ""}
+        title={firstNonEmpty(preview?.note, preview?.name)}
         description={
           preview
             ? `${preview.name} · ${fmtSize(preview.size_bytes)}${preview.finding_id ? ` · 漏洞 #${preview.finding_id}` : ""}`
@@ -1882,7 +1883,7 @@ function TaskArtifactsCard({ taskId }: { taskId: string }) {
         open={!!docPreview}
         onClose={() => setDocPreview(null)}
         src={docPreview ? previewUrl(docPreview.artifact.id, docPreview.page) : ""}
-        title={docPreview?.artifact.note || docPreview?.artifact.name || ""}
+        title={firstNonEmpty(docPreview?.artifact.note, docPreview?.artifact.name)}
         description={
           docPreview
             ? `${docPreview.artifact.name} · 第 ${docPreview.page} / ${docPreview.artifact.preview_pages ?? 0} 页${docPreview.artifact.finding_id ? ` · 漏洞 #${docPreview.artifact.finding_id}` : ""}`

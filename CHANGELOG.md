@@ -35,14 +35,18 @@
 - `files.includes` 排除 `.next-*` 历史产物，避免把生成代码算进 lint（全量诊断从
   30 万+ 降回 165 个源文件）。
 - **CI 增加增量 lint 棘轮**：`biome lint --changed --since=<base>` 只检查本次改动
-  文件，新代码不得再引入 error；首批清理后存量 77 个 error 留作独立治理任务。
+  文件，新代码不得再引入 error；改动文件清零后全量存量 47 个 error 留作独立治理任务。
 - 系统配置页修复 12 处 `<label>` 未关联输入框（补 `htmlFor`/`id`），并移除未使用导入。
 
 ### 变更（前端 lint 第一批）
 - 空块 25 处（补忽略失败注释）、`label` 未关联输入框 22 处、点击区域键盘可达性 5 处、
-  按钮显式 `type` 1 处；全量 error 从 133 降到 77。
+  按钮显式 `type` 1 处；全量 error 从 133 降到 47。
 - 技能树/文件树补 `role=treeitem`、`tabIndex`、`Enter/Space` 处理与 `aria-expanded`
   / `aria-selected`，纯键盘也能展开与选中。
+- 改动文件内的存量 error 一并收口：`useNullishCoalescing` 抽 `firstNonEmpty` helper
+  （空串回退语义不变）、`noFloatingPromises` 补 `void`、`useIterableCallbackReturn`
+  改块语句、两处 effect 依赖加定向 `biome-ignore` 说明；MCP 卡片改用事件目标判定，
+  不再给静态 `div` 挂点击/键盘处理器。
 
 ### 修复（race 门禁发现的两处真实竞态）
 - `agent.ToolAugment` / `ToolResolve` / `PromptOverride` 改为 RWMutex 保护的

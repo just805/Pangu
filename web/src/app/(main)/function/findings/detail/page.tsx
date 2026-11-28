@@ -37,6 +37,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { statusMeta } from "@/lib/status";
 import type { Finding, FindingStatus, Severity, TaskArtifact } from "@/lib/types";
+import { firstNonEmpty } from "@/lib/utils";
 
 import { FindingLineageView } from "./lineage";
 
@@ -349,7 +350,7 @@ function FindingDetailInner() {
                       className="inline-flex max-w-[16rem] items-center gap-1 text-primary hover:underline"
                       title={finding.task_description}
                     >
-                      <span className="truncate">{finding.task_description || `#${finding.task_id}`}</span>
+                      <span className="truncate">{firstNonEmpty(finding.task_description, `#${finding.task_id}`)}</span>
                       <ArrowUpRightIcon className="size-3 shrink-0" />
                     </Link>
                   ) : (
@@ -717,7 +718,7 @@ function FindingShots({ taskId, findingId }: { taskId?: string; findingId: strin
         open={!!preview}
         onClose={() => setPreview(null)}
         src={preview ? fullUrl(preview.id) : ""}
-        title={preview?.note || preview?.name || ""}
+        title={firstNonEmpty(preview?.note, preview?.name)}
         description={preview ? `${preview.name} · ${(preview.size_bytes / 1024).toFixed(0)}KB` : ""}
         downloadUrl={preview ? `${fullUrl(preview.id)}?download=1` : ""}
       />
@@ -726,7 +727,7 @@ function FindingShots({ taskId, findingId }: { taskId?: string; findingId: strin
         open={!!docPreview}
         onClose={() => setDocPreview(null)}
         src={docPreview ? previewUrl(docPreview.artifact.id, docPreview.page) : ""}
-        title={docPreview?.artifact.note || docPreview?.artifact.name || ""}
+        title={firstNonEmpty(docPreview?.artifact.note, docPreview?.artifact.name)}
         description={
           docPreview
             ? `${docPreview.artifact.name} · 第 ${docPreview.page} / ${docPreview.artifact.preview_pages ?? 0} 页`
