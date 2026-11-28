@@ -130,7 +130,7 @@ jobs:
           # 句柄上限进单元文件；备份定时器已启用
           grep -q "^LimitNOFILE=65535" /etc/systemd/system/pangu.service
           systemctl is-enabled pangu-backup.timer >/dev/null || { echo "备份定时器未启用"; exit 1; }
-          [ -x /opt/pangu/backup.sh ] || { echo "缺 backup.sh"; exit 1; }
+          sudo test -x /opt/pangu/backup.sh || { echo "缺 backup.sh"; sudo ls -la /opt/pangu; exit 1; }
           echo "host tuning / backup OK (swap=$(awk '/SwapTotal/{print int($2/1024)}' /proc/meminfo)M)"
 
       - name: Verify service (health / database)
@@ -143,11 +143,11 @@ jobs:
 
       - name: Verify idempotent re-run (interactive again)
         run: |
-          md5_before=$(md5sum /opt/pangu/config.json | cut -d' ' -f1)
+          md5_before=$(sudo md5sum /opt/pangu/config.json | cut -d' ' -f1)
           printf '\n\n\n\n' | \
             sudo -E script -qfec "bash install.sh --version=$PANGU_SMOKE_VERSION" /dev/null 2>&1 | tee /tmp/reinstall.log
           grep -q "沿用既有 config.json" /tmp/reinstall.log
-          md5_after=$(md5sum /opt/pangu/config.json | cut -d' ' -f1)
+          md5_after=$(sudo md5sum /opt/pangu/config.json | cut -d' ' -f1)
           [ "$md5_before" = "$md5_after" ] || { echo "config.json 被覆盖！"; exit 1; }
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/health)
           [ "$code" = "200" ] || { echo "reinstall health=$code"; exit 1; }
