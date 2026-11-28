@@ -3513,8 +3513,9 @@ function CreateTaskSheet({
             <Field>
               <FieldLabel htmlFor="task-auth-url">目标登录凭据（可选）</FieldLabel>
               <div className="grid gap-2">
-                <label className="flex items-center gap-2 text-sm">
+                <label htmlFor="task-auth-enabled" className="flex items-center gap-2 text-sm">
                   <Checkbox
+                    id="task-auth-enabled"
                     checked={authCfg.enabled}
                     onCheckedChange={(v) => setAuthCfg((c) => ({ ...c, enabled: !!v }))}
                   />

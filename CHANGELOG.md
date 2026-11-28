@@ -35,8 +35,23 @@
 - `files.includes` 排除 `.next-*` 历史产物，避免把生成代码算进 lint（全量诊断从
   30 万+ 降回 165 个源文件）。
 - **CI 增加增量 lint 棘轮**：`biome lint --changed --since=<base>` 只检查本次改动
-  文件，新代码不得再引入 error；存量 133 个 error 留作独立治理任务。
+  文件，新代码不得再引入 error；首批清理后存量 77 个 error 留作独立治理任务。
 - 系统配置页修复 12 处 `<label>` 未关联输入框（补 `htmlFor`/`id`），并移除未使用导入。
+
+### 变更（前端 lint 第一批）
+- 空块 25 处（补忽略失败注释）、`label` 未关联输入框 22 处、点击区域键盘可达性 5 处、
+  按钮显式 `type` 1 处；全量 error 从 133 降到 77。
+- 技能树/文件树补 `role=treeitem`、`tabIndex`、`Enter/Space` 处理与 `aria-expanded`
+  / `aria-selected`，纯键盘也能展开与选中。
+
+### 修复（race 门禁发现的两处真实竞态）
+- `agent.ToolAugment` / `ToolResolve` / `PromptOverride` 改为 RWMutex 保护的
+  setter/getter：测试清理与仍在跑的 planner 不再竞争同一全局函数指针；生产装配
+  通过 `Set*` 写入，读取走带读锁的包装函数。
+- `TestFindingTrafficArchiveV3RoundTripAndRetry` 不再在 `Server.New` 之后改写
+  `s.ctx`（后台协程已读过该字段），改为构造时就传入可用 ctx 的 fixture。
+- `TestCoreTaskLifecyclePG` 的目标种子轮询从 3s 放宽到 10s，消除 `-race` 高负载下
+  的纯时序失败。
 
 ### 重构（路由注册按域拆分）
 - `server/server.go` 的 `Handler()` 中 340 条路由按域拆到

@@ -168,7 +168,7 @@ export default function LLMRecordsPage() {
     api
       .settings()
       .then((s) => { if (alive) setRecEnabled(!!s.llm_record); })
-      .catch(() => {});
+      .catch(() => { /* 忽略失败，保持当前展示 */ });
     return () => { alive = false; };
   }, []);
 
@@ -208,12 +208,12 @@ export default function LLMRecordsPage() {
         setRecords(r.records ?? []);
         setTotal(r.total ?? 0);
       })
-      .catch(() => {})
+      .catch(() => { /* 忽略失败，保持当前展示 */ })
       .finally(() => alive && setLoading(false));
     api
       .llmTasks()
       .then((r) => { if (alive) setTasks(r.tasks ?? []); })
-      .catch(() => {});
+      .catch(() => { /* 忽略失败，保持当前展示 */ });
     return () => { alive = false; };
   }, [page, size, sessionQ, model, pickedTask]);
 
@@ -230,7 +230,7 @@ export default function LLMRecordsPage() {
         setPage(0);
         setReloadTick((t) => t + 1);
       })
-      .catch(() => {})
+      .catch(() => { /* 忽略失败，保持当前展示 */ })
       .finally(() => setDeleting(false));
   };
 
@@ -246,7 +246,7 @@ export default function LLMRecordsPage() {
     api
       .llmRecordDetail(selected.id)
       .then((d) => { if (alive) setDetail(d); })
-      .catch(() => {})
+      .catch(() => { /* 忽略失败，保持当前展示 */ })
       .finally(() => { if (alive) setDetailLoading(false); });
     return () => { alive = false; };
   }, [selected]);

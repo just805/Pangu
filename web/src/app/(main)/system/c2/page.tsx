@@ -337,6 +337,7 @@ function SessionRow({ s }: { s: ListenerSession }) {
   return (
     <div className="border-b px-3 py-2 last:border-b-0">
       <button
+        type="button"
         className="flex w-full flex-wrap items-center gap-2 text-left text-sm"
         onClick={() => setOpenView(!openView)}
       >

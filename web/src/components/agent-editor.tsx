@@ -257,7 +257,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
     } catch (e) {
       toast.error(`保存工具绑定失败：${(e as Error).message}`);
       reload();
-      api.tools().then(setTools).catch(() => {});
+      api.tools().then(setTools).catch(() => { /* 忽略失败，保持当前展示 */ });
     }
   }
 
@@ -627,8 +627,16 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         <p className="mb-3 text-muted-foreground text-xs">勾选此 Agent 可见的 MCP 服务器。</p>
         <div className="grid gap-2">
           {mcp.map((m) => (
-            <label key={m.id} className="flex items-center gap-2 rounded-md border p-2 text-sm">
-              <Checkbox checked={mcpVisible.includes(m.id)} onCheckedChange={() => toggleMcp(m.id)} />
+            <label
+              key={m.id}
+              htmlFor={`agent-mcp-${m.id}`}
+              className="flex items-center gap-2 rounded-md border p-2 text-sm"
+            >
+              <Checkbox
+                id={`agent-mcp-${m.id}`}
+                checked={mcpVisible.includes(m.id)}
+                onCheckedChange={() => toggleMcp(m.id)}
+              />
               {m.name}
               <span className="ml-auto text-muted-foreground text-xs">{m.transport}</span>
             </label>
@@ -642,8 +650,16 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         <p className="mb-3 text-muted-foreground text-xs">勾选此 Agent 可见的 Skill。</p>
         <div className="grid gap-2">
           {skills.map((s) => (
-            <label key={s.name} className="flex items-center gap-2 rounded-md border p-2 text-sm">
-              <Checkbox checked={skillVisible.includes(s.name)} onCheckedChange={() => toggleSkill(s.name)} />
+            <label
+              key={s.name}
+              htmlFor={`agent-skill-${s.name}`}
+              className="flex items-center gap-2 rounded-md border p-2 text-sm"
+            >
+              <Checkbox
+                id={`agent-skill-${s.name}`}
+                checked={skillVisible.includes(s.name)}
+                onCheckedChange={() => toggleSkill(s.name)}
+              />
               <span className="font-mono text-xs">{s.name}</span>
               {s.description && <span className="ml-auto truncate text-muted-foreground text-xs">{s.description}</span>}
             </label>
@@ -662,12 +678,14 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
             return (
               <label
                 key={t.key}
+                htmlFor={`agent-tool-${t.key}`}
                 className={cn(
                   "flex items-center gap-2 rounded-md border p-2 text-sm",
                   gated && "opacity-60",
                 )}
               >
                 <Checkbox
+                  id={`agent-tool-${t.key}`}
                   checked={t.agents.includes(agentKey)}
                   disabled={gated}
                   onCheckedChange={() => toggleTool(t)}
@@ -1037,8 +1055,8 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
 
         {/* 定时 */}
         <div className="grid gap-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={onInterval} onCheckedChange={(v) => setOnInterval(!!v)} /> 定时触发
+          <label htmlFor="trigger-interval" className="flex items-center gap-2 text-sm">
+            <Checkbox id="trigger-interval" checked={onInterval} onCheckedChange={(v) => setOnInterval(!!v)} /> 定时触发
           </label>
           {onInterval && (
             <div className="grid gap-1.5">
@@ -1056,8 +1074,8 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
 
         {/* finding */}
         <div className="grid gap-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={onFinding} onCheckedChange={(v) => setOnFinding(!!v)} /> 发现 finding 时触发
+          <label htmlFor="trigger-finding" className="flex items-center gap-2 text-sm">
+            <Checkbox id="trigger-finding" checked={onFinding} onCheckedChange={(v) => setOnFinding(!!v)} /> 发现 finding 时触发
           </label>
           {onFinding && (
             <Textarea className="text-xs" rows={2} value={findingMsg}
@@ -1067,8 +1085,8 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
 
         {/* 目标达成 */}
         <div className="grid gap-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={onGoalMet} onCheckedChange={(v) => setOnGoalMet(!!v)} /> 目标达成时触发
+          <label htmlFor="trigger-goal-met" className="flex items-center gap-2 text-sm">
+            <Checkbox id="trigger-goal-met" checked={onGoalMet} onCheckedChange={(v) => setOnGoalMet(!!v)} /> 目标达成时触发
           </label>
           {onGoalMet && (
             <Textarea className="text-xs" rows={2} value={goalMsg}
@@ -1078,8 +1096,8 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
 
         {/* 任务超时 */}
         <div className="grid gap-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={onTaskTimeout} onCheckedChange={(v) => setOnTaskTimeout(!!v)} /> 任务超时时触发
+          <label htmlFor="trigger-task-timeout" className="flex items-center gap-2 text-sm">
+            <Checkbox id="trigger-task-timeout" checked={onTaskTimeout} onCheckedChange={(v) => setOnTaskTimeout(!!v)} /> 任务超时时触发
           </label>
           {onTaskTimeout && (
             <Textarea className="text-xs" rows={2} value={taskTimeoutMsg}
@@ -1089,8 +1107,8 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
 
         {/* 工具调用 */}
         <div className="grid gap-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={onToolCall} onCheckedChange={(v) => setOnToolCall(!!v)} /> 工具调用时触发
+          <label htmlFor="trigger-tool-call" className="flex items-center gap-2 text-sm">
+            <Checkbox id="trigger-tool-call" checked={onToolCall} onCheckedChange={(v) => setOnToolCall(!!v)} /> 工具调用时触发
           </label>
           {onToolCall && (
             <div className="grid gap-1.5">
@@ -1101,9 +1119,17 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
                 {tools.length === 0 && <span className="text-muted-foreground text-xs">（工具列表为空）</span>}
                 <div className="grid gap-1">
                   {tools.map((tool) => (
-                    <label key={tool.key} className="flex items-start gap-2 text-xs">
-                      <Checkbox className="mt-0.5" checked={toolNames.includes(tool.key)}
-                        onCheckedChange={() => toggleTool(tool.key)} />
+                    <label
+                      key={tool.key}
+                      htmlFor={`trigger-tool-${tool.key}`}
+                      className="flex items-start gap-2 text-xs"
+                    >
+                      <Checkbox
+                        id={`trigger-tool-${tool.key}`}
+                        className="mt-0.5"
+                        checked={toolNames.includes(tool.key)}
+                        onCheckedChange={() => toggleTool(tool.key)}
+                      />
                       <span className="min-w-0">
                         <span className="font-medium">{tool.key}</span>
                         {tool.description && <span className="line-clamp-1 text-muted-foreground"> {tool.description}</span>}
@@ -1120,8 +1146,8 @@ function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent
 
         {/* 任务创建 */}
         <div className="grid gap-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox checked={onTaskCreate} onCheckedChange={(v) => setOnTaskCreate(!!v)} /> 任务创建时触发
+          <label htmlFor="trigger-task-create" className="flex items-center gap-2 text-sm">
+            <Checkbox id="trigger-task-create" checked={onTaskCreate} onCheckedChange={(v) => setOnTaskCreate(!!v)} /> 任务创建时触发
           </label>
           {onTaskCreate && (
             <Textarea className="text-xs" rows={2} value={taskCreateMsg}

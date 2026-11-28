@@ -142,7 +142,7 @@ function Row({
                   findingId={String(f.finding_id)}
                   contextTask={contextTaskId}
                   readOnly={f.inherited}
-                  onChanged={() => {}}
+                  onChanged={() => { /* 只读面板无需刷新父级 */ }}
                 />
               </div>
               <details className="group">

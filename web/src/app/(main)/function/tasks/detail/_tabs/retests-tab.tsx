@@ -67,7 +67,7 @@ export function RetestsTab({ taskId }: { taskId: string }) {
         setCandidates(r.candidates.length);
         setStates(Object.fromEntries(r.states.map((s) => [s.finding_id, s])));
       })
-      .catch(() => {});
+      .catch(() => { /* 忽略失败，保持当前展示 */ });
     return () => {
       disposed = true;
     };

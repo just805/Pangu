@@ -402,7 +402,7 @@ function FindingShots({ taskId, findingId }: { taskId?: string; findingId: strin
     api
       .taskArtifacts(taskId)
       .then(setAll)
-      .catch(() => {});
+      .catch(() => { /* 忽略失败，保持当前展示 */ });
   }, [taskId]);
   React.useEffect(() => {
     load();

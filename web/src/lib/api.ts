@@ -931,7 +931,7 @@ export const api = {
       if (!done.ok) throw httpStatusError("合并分片失败", done.status, await done.text());
       return (await done.json()) as ReverseSampleDetail;
     } catch (e) {
-      void fetch(`${base}/${init.upload_id}`, { method: "DELETE", headers: authHeaders }).catch(() => {});
+      void fetch(`${base}/${init.upload_id}`, { method: "DELETE", headers: authHeaders }).catch(() => { /* 忽略失败，保持当前展示 */ });
       throw e;
     }
   },
@@ -1308,7 +1308,7 @@ export const api = {
         return data.attachments;
       } catch (e) {
         void fetch(`/api/chat/uploads/${init.upload_id}?${query}`, { method: "DELETE", headers: authHeaders }).catch(
-          () => {},
+          () => { /* 忽略取消失败，不覆盖原始错误 */ },
         );
         throw e;
       }

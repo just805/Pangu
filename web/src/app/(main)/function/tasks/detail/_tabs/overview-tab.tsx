@@ -1369,7 +1369,7 @@ function TaskAuthCard({ taskId }: { taskId: string }) {
       .then((t) => {
         if (alive) setCfg(t.auth_config ?? null);
       })
-      .catch(() => {});
+      .catch(() => { /* 忽略失败，保持当前展示 */ });
     return () => {
       alive = false;
     };
@@ -1447,7 +1447,7 @@ function TaskArtifactsCard({ taskId }: { taskId: string }) {
             setQuota(r.quota ?? null);
           }
         })
-        .catch(() => {}),
+        .catch(() => { /* 忽略失败，保持当前展示 */ }),
     [taskId],
   );
   React.useEffect(() => {
@@ -1465,7 +1465,7 @@ function TaskArtifactsCard({ taskId }: { taskId: string }) {
       .then((fs) => {
         if (alive) setFindings(fs);
       })
-      .catch(() => {});
+      .catch(() => { /* 忽略失败，保持当前展示 */ });
     return () => {
       alive = false;
     };

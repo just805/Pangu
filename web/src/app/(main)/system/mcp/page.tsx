@@ -176,7 +176,7 @@ export default function MCPPage() {
   const [refreshing, setRefreshing] = React.useState(false);
 
   const load = React.useCallback(() => {
-    api.agents().then(setAgents).catch(() => {});
+    api.agents().then(setAgents).catch(() => { /* 忽略失败，保持当前展示 */ });
     api
       .mcpServers()
       .then((ss) => {
@@ -185,10 +185,10 @@ export default function MCPPage() {
           api
             .resourceVisibility("mcp", s.id)
             .then((ids) => setVisibility((v) => ({ ...v, [s.id]: ids })))
-            .catch(() => {}),
+            .catch(() => { /* 忽略失败，保持当前展示 */ }),
         );
       })
-      .catch(() => {});
+      .catch(() => { /* 忽略失败，保持当前展示 */ });
   }, []);
   React.useEffect(() => {
     load();
@@ -437,8 +437,9 @@ export default function MCPPage() {
               value={form.url}
               onChange={(e) => setF({ url: e.target.value })}
             />
-            <label className="flex items-center gap-2 text-sm">
+            <label htmlFor="mcp-insecure" className="flex items-center gap-2 text-sm">
               <Checkbox
+                id="mcp-insecure"
                 checked={form.insecure}
                 onCheckedChange={(v) => setF({ insecure: v === true })}
               />
@@ -556,7 +557,11 @@ export default function MCPPage() {
                 <Badge variant="outline" className="uppercase">
                   {s.transport}
                 </Badge>
-                <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                <div
+                  className="ml-auto flex items-center gap-2"
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                >
                   <Switch
                     checked={s.enabled}
                     onCheckedChange={() => toggleEnabled(s)}
@@ -577,12 +582,21 @@ export default function MCPPage() {
               <p className="text-muted-foreground text-sm">
                 {s.tools && s.tools.length > 0 ? `${s.tools.length} 个工具` : "尚未发现工具"}
               </p>
-              <div className="grid gap-2" onClick={(e) => e.stopPropagation()}>
+              <div
+                className="grid gap-2"
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
                 <span className="text-muted-foreground text-xs">可见性（按 Agent 授权）</span>
                 <div className="flex flex-wrap gap-x-4 gap-y-2">
                   {agents.map((a) => (
-                    <label key={a.key} className="flex items-center gap-2 text-sm">
+                    <label
+                      key={a.key}
+                      htmlFor={`mcp-agent-${s.id}-${a.id}`}
+                      className="flex items-center gap-2 text-sm"
+                    >
                       <Checkbox
+                        id={`mcp-agent-${s.id}-${a.id}`}
                         checked={(visibility[s.id] ?? []).includes(a.id)}
                         onCheckedChange={() => toggleVisibility(s.id, a.id, a.name)}
                       />

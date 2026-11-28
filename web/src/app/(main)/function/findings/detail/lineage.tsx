@@ -30,7 +30,7 @@ export function FindingLineageView({ findingId }: { findingId: string }) {
         setNodes(g.nodes ?? []);
         setEdges(g.edges ?? []);
       })
-      .catch(() => {})
+      .catch(() => { /* 忽略失败，保持当前展示 */ })
       .finally(() => {
         if (alive) setLoaded(true);
       });

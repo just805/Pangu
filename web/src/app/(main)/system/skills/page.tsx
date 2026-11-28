@@ -345,17 +345,17 @@ export default function SkillsPage() {
 
   // ── Data ──────────────────────────────────────────────────────────────────
   const load = React.useCallback(() => {
-    api.agents().then(setAgents).catch(() => {});
-    api.mcpServers().then(setMcpOptions).catch(() => {});
-    api.missingSkills().then(setMissing).catch(() => {});
+    api.agents().then(setAgents).catch(() => { /* 忽略失败，保持当前展示 */ });
+    api.mcpServers().then(setMcpOptions).catch(() => { /* 忽略失败，保持当前展示 */ });
+    api.missingSkills().then(setMissing).catch(() => { /* 忽略失败，保持当前展示 */ });
     api.skills().then((ss) => {
       setSkills(ss);
       ss.forEach((s) =>
         api.skillVisibility(s.name)
           .then((ids) => setVisibility((v) => ({ ...v, [s.name]: ids })))
-          .catch(() => {}),
+          .catch(() => { /* 忽略失败，保持当前展示 */ }),
       );
-    }).catch(() => {});
+    }).catch(() => { /* 忽略失败，保持当前展示 */ });
   }, []);
 
   React.useEffect(() => { load(); }, [load]);
@@ -633,9 +633,18 @@ export default function SkillsPage() {
         return (
           <div key={node.path}>
             <div
+              role="treeitem"
+              tabIndex={0}
+              aria-expanded={open}
               className="group relative flex cursor-pointer select-none items-center gap-1 rounded py-0.5 pr-1 text-sm hover:bg-muted"
               style={{ paddingLeft: baseIndent }}
               onClick={() => toggleExpanded(key)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggleExpanded(key);
+                }
+              }}
             >
               <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
               {open
@@ -675,12 +684,21 @@ export default function SkillsPage() {
       return (
         <div
           key={node.path}
+          role="treeitem"
+          tabIndex={0}
+          aria-selected={isSelected}
           className={cn(
             "group relative flex cursor-pointer select-none items-center gap-1 rounded py-0.5 pr-1 text-sm",
             isSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted",
           )}
           style={{ paddingLeft: baseIndent + 16 }}
           onClick={() => setSelected({ skill, path: node.path })}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setSelected({ skill, path: node.path });
+            }
+          }}
         >
           <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1 truncate font-mono text-xs" title={node.path}>{node.name}</span>
@@ -775,6 +793,9 @@ export default function SkillsPage() {
                   <div key={s.name}>
                     {/* skill 根节点 */}
                     <div
+                      role="treeitem"
+                      tabIndex={0}
+                      aria-expanded={isOpen}
                       className={cn(
                         "group relative flex cursor-pointer select-none items-center gap-1 rounded px-2 py-1 text-sm",
                         isSkillSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted",
@@ -782,6 +803,13 @@ export default function SkillsPage() {
                       onClick={() => {
                         toggleExpanded(s.name);
                         setSelected({ skill: s.name, path: null });
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          toggleExpanded(s.name);
+                          setSelected({ skill: s.name, path: null });
+                        }
                       }}
                     >
                       <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", isOpen && "rotate-90")} />
@@ -937,8 +965,13 @@ export default function SkillsPage() {
                     ) : (
                       <div className="flex flex-wrap gap-x-4 gap-y-2">
                         {mcpOptions.map((m) => (
-                          <label key={m.id} className="flex cursor-pointer items-center gap-2 text-sm">
+                          <label
+                            key={m.id}
+                            htmlFor={`skill-mcp-${selectedSkill.name}-${m.id}`}
+                            className="flex cursor-pointer items-center gap-2 text-sm"
+                          >
                             <Checkbox
+                              id={`skill-mcp-${selectedSkill.name}-${m.id}`}
                               checked={detailMcps.includes(m.name)}
                               onCheckedChange={(on) => toggleSkillMcp(selectedSkill.name, m.name, !!on)}
                             />
@@ -953,8 +986,13 @@ export default function SkillsPage() {
                     <Label className="text-muted-foreground text-xs">可见性（按 Agent 授权）</Label>
                     <div className="space-y-2">
                       {agents.map((a) => (
-                        <label key={a.key} className="flex cursor-pointer items-center gap-2 text-sm">
+                        <label
+                          key={a.key}
+                          htmlFor={`skill-agent-${selectedSkill.name}-${a.id}`}
+                          className="flex cursor-pointer items-center gap-2 text-sm"
+                        >
                           <Checkbox
+                            id={`skill-agent-${selectedSkill.name}-${a.id}`}
                             checked={(visibility[selectedSkill.name] ?? []).includes(a.id)}
                             onCheckedChange={() => toggleVisibility(selectedSkill.name, a.id, a.name)}
                           />
@@ -1091,8 +1129,13 @@ export default function SkillsPage() {
               ) : (
                 <div className="flex flex-col gap-2">
                   {mcpOptions.map((m) => (
-                    <label key={m.id} className="flex cursor-pointer items-center gap-2 text-sm">
+                    <label
+                      key={m.id}
+                      htmlFor={`new-skill-mcp-${m.id}`}
+                      className="flex cursor-pointer items-center gap-2 text-sm"
+                    >
                       <Checkbox
+                        id={`new-skill-mcp-${m.id}`}
                         checked={newMcps.includes(m.name)}
                         onCheckedChange={(on) =>
                           setNewMcps((cur) => on ? [...cur, m.name] : cur.filter((n) => n !== m.name))
@@ -1113,8 +1156,13 @@ export default function SkillsPage() {
               ) : (
                 <div className="flex flex-col gap-2">
                   {agents.map((a) => (
-                    <label key={a.key} className="flex cursor-pointer items-center gap-2 text-sm">
+                    <label
+                      key={a.key}
+                      htmlFor={`new-skill-agent-${a.id}`}
+                      className="flex cursor-pointer items-center gap-2 text-sm"
+                    >
                       <Checkbox
+                        id={`new-skill-agent-${a.id}`}
                         checked={newVisibility.includes(a.id)}
                         onCheckedChange={(on) =>
                           setNewVisibility((cur) => on ? [...cur, a.id] : cur.filter((id) => id !== a.id))
