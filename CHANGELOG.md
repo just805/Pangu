@@ -17,6 +17,19 @@
 - `scripts/check_install_sh.sh` 增加三条守门：环境变量覆盖、`--dir` 优先、
   归一化先于 `install.env` 加载。
 
+### 修复（安装与 race 门禁）
+- **Docker 首装中断**：`.env` heredoc 在 `PORT` / `PROXY_PORT` 声明之前引用它们，
+  `set -u` 直接报 `unbound variable`。端口变量已提前到 `deploy_docker` 开头。
+- **race 门禁继续收口**：`WrapupOverride` / 任务超时收尾词与轮数 / `SkillIndexBlock`
+  / `ListTaskArtifacts` / `FindingTaskID` / `FindingTrafficBindingEnabled` 也统一进
+  `agent/hooks.go` 的 RWMutex，测试改用 `Set*`/`Get*`，消除与残留 worker 的读写竞争。
+
+### 变更（安装冒烟）
+- `linux-install-smoke` 新增 `smoke-custom-dir`：用 `INSTALL_DIR=/srv/pangu-smoke`
+  真实安装，验证落点、systemd 单元、`ProtectHome`、健康、幂等重跑与 `--doctor`。
+- lint step 接入 `scripts/check_install_sh.sh`；同时修正 `fs.file-max`、`backup.sh`
+  与 `config.json` 这些依赖运行用户/默认值的过严断言（root-only 文件改用 sudo）。
+
 ## [0.1.34] - 2026-11-28
 
 ### 新增（流量保留策略与磁盘可见性）
