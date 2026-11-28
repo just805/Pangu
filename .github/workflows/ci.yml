@@ -12,6 +12,7 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:16
@@ -26,14 +27,20 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
-    env:
-      PANGU_PG_DSN: postgres://pangu:pangu-pass@localhost:5432/pangu_test?sslmode=disable
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+      # 每次 CI 用一个独占库，而不是服务容器自带的 pangu_test：固定名 fixture
+      # 在共享库里反复跑会撞唯一键，产生「本地/上次跑过就失败」的假回归。
+      - name: Create isolated test database
+        run: |
+          DB="pangu_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          PGPASSWORD=pangu-pass psql -h 127.0.0.1 -U pangu -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE \"$DB\" OWNER pangu"
+          echo "PANGU_PG_DSN=postgres://pangu:pangu-pass@127.0.0.1:5432/$DB?sslmode=disable" >> "$GITHUB_ENV"
       - name: Build
         run: go build ./...
       - name: Vet
@@ -58,9 +65,11 @@ jobs:
           fi
           exit "$status"
 
-      # flaky 兜底：负载型测试（共享 PG 库 + 后台协程竞争）在 CI 高负载下偶发
-      # 假失败。整轮失败时提取 --- FAIL 名单**只重跑失败的测试**——重跑通过 =
-      # flaky（job 绿，首轮日志仍在 summary 与日志里可查）；重跑仍挂 = 真回归。
+      # flaky 兜底：负载型测试（后台协程竞争）在 CI 高负载下偶发假失败。
+      # 整轮失败时提取 --- FAIL 名单**只重跑失败的测试**——重跑通过 = flaky
+      # （job 绿，首轮日志仍在 summary 与日志里可查）；重跑仍挂 = 真回归。
+      # 重跑换一个全新库：首轮留下的 fixture 可能正是失败原因，复用旧库会把
+      # 假失败带进重跑。
       - name: Retry failed tests (flaky guard)
         if: failure()
         run: |
@@ -69,13 +78,57 @@ jobs:
             echo "无 --- FAIL 行（构建/panic 类失败），不重试"
             exit 1
           fi
-          echo "flaky guard retry: $FAILED"
+          DB="pangu_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_retry"
+          PGPASSWORD=pangu-pass psql -h 127.0.0.1 -U pangu -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE \"$DB\" OWNER pangu"
+          export PANGU_PG_DSN="postgres://pangu:pangu-pass@127.0.0.1:5432/$DB?sslmode=disable"
+          echo "flaky guard retry: $FAILED（新库 $DB）"
           go test -p 1 -run "($FAILED)" ./... -count=1
+
+  # 竞态检测单独成 job：-race 会让测试慢 3–10 倍，放进主 job 会显著拉长每次
+  # PR 的反馈时间；这里只覆盖并发最密集的核心包。engine/settle/delete 的竞态
+  # 历史问题（cancelcause、删除屏障、drain）都落在这些包里。
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pangu
+          POSTGRES_PASSWORD: pangu-pass
+          POSTGRES_DB: pangu_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pangu"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Create isolated test database
+        run: |
+          DB="pangu_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_race"
+          PGPASSWORD=pangu-pass psql -h 127.0.0.1 -U pangu -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE \"$DB\" OWNER pangu"
+          echo "PANGU_PG_DSN=postgres://pangu:pangu-pass@127.0.0.1:5432/$DB?sslmode=disable" >> "$GITHUB_ENV"
+      - name: Test core packages with race detector
+        run: |
+          go test -race -p 1 -count=1 -timeout 45m \
+            ./db ./guard ./traffic ./evidence ./intercept ./agent ./server
 
   frontend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # --changed 需要与 base 比较，默认的浅克隆拿不到基线。
+          fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -84,9 +137,22 @@ jobs:
       - name: Install
         run: npm ci
         working-directory: web
-      # lint 暂不进门禁：存量 75 个 error 均为行为级修复（空 catch 补处理、悬浮
-      # Promise 补 await、a11y），与最小 diff 原则冲突，留作独立治理任务；
-      # build:static 已覆盖 TS 类型检查与静态导出验证。
+      # 存量 lint 债务还在（133 个 error，多为 a11y/空 catch/悬浮 Promise），
+      # 全量门禁会让任何 PR 立即红。这里用 --changed 做增量棘轮：只检查本次
+      # push / PR 改动的文件，新代码不得再引入 error；warning 不阻断。
+      # 存量清理仍是独立任务，不把行为级修复混进功能 PR。
+      - name: Lint changed files (ratchet)
+        working-directory: web
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            SINCE="${{ github.event.pull_request.base.sha }}"
+          else
+            SINCE="${{ github.event.before }}"
+            if [ -z "$SINCE" ] || [ "$SINCE" = "0000000000000000000000000000000000000000" ]; then
+              SINCE="HEAD~1"
+            fi
+          fi
+          npx biome lint --changed --since="$SINCE"
       - name: Build (static export)
         run: npm run build:static
         working-directory: web

@@ -25,7 +25,7 @@ cd web && NEXT_EXPORT=1 npx next build
 # 固定名 fixture 的唯一键，产生假失败）
 docker run -d --name pangu-audit-pg -e POSTGRES_PASSWORD=pangu-pass -e POSTGRES_USER=pangu \
   -e POSTGRES_DB=pangu -p 15432:5432 postgres:16-alpine
-docker exec pangu-audit-pg psql -U pangu -d postgres -c "DROP DATABASE IF EXISTS pangu_ci; CREATE DATABASE pangu_ci OWNER pangu"
+docker exec pangu-audit-pg psql -U pangu -d postgres -c "DROP DATABASE IF EXISTS pangu_ci" -c "CREATE DATABASE pangu_ci OWNER pangu"
 PANGU_PG_DSN="postgres://pangu:pangu-pass@127.0.0.1:15432/pangu_ci?sslmode=disable" go test -p 1 ./... -count=1
 
 # 发版构建（本机交叉编译验证用；正式发版靠 CI）
@@ -43,7 +43,12 @@ PANGU_SKIP_FRONTEND=1 PANGU_SKIP_NPM_CI=1 PANGU_COMPRESS=0 PANGU_PACKAGE=0 \
     `newNotifyFixture` 现已把 `notify_enabled` 关为 false（用例全部显式自驱，
     cleanup 恢复默认）；chat mention 的 5s 窗口放宽到 15s（CI 负载下排队慢）。
   - **CI 兜底**：ci.yml Test 步失败后自动提取 `--- FAIL` 名单只重跑失败测试
-    （重跑过 = flaky 绿灯但日志可见；重跑挂 = 真回归）。
+    （重跑过 = flaky 绿灯但日志可见；重跑挂 = 真回归）；重跑前会新建独占测试库，
+    避免首轮留下的固定名 fixture 把假失败带进重跑。
+- **CI 测试库**：每个 job 用 `pangu_ci_<run_id>_<attempt>` 独占库，不再复用服务容器
+  自带的 `pangu_test`。本地多轮跑同理——先 DROP/CREATE（上面两条 `-c`）。
+- **竞态门禁**：ci.yml 的 `race` job 对 `db/guard/traffic/evidence/intercept/agent/server`
+  跑 `go test -race -p 1`。本地复现用同一组包，不要加 `./...`（慢且无额外收益）。
 - **判定法**：`go test ./server/ -run <name> -count=1` 单跑，过 = 环境问题。
 - **Windows 特有**：`evidence` 目录 fsync 已做 GOOS 分支；不要引入依赖目录 fsync 的新代码。
 

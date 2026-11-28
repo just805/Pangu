@@ -1,9 +1,10 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.1/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
-    "useIgnoreFile": true
+    "useIgnoreFile": true,
+    "defaultBranch": "main"
   },
   "assist": {
     "enabled": true,
@@ -37,6 +38,7 @@
       "!.husky",
       "!node_modules",
       "!.next",
+      "!.next-*",
       "!dist",
       "!out",
       "!src/components/ui",

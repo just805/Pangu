@@ -4,6 +4,45 @@
 
 ## [Unreleased]
 
+### 新增（流量保留策略与磁盘可见性）
+- **流量不再只增不减**：系统配置新增「流量保留」——按天数（`traffic_retention_days`）
+  或目录容量（`traffic_retention_max_mb`）自动删除最旧的流量，0=关闭；保存后立即
+  清理一次，之后每小时检查。删除只动未绑定证据的录制数据，已绑定 finding 的证据
+  快照独立保存。
+- **监测页新增「流量目录」**：显示数据目录占用、文件数与当前保留策略；超过 5GB
+  且未配置策略时进告警区，给出处置建议。
+- 清理与删除复用既有事务 + blob GC + SQLite 索引回收路径（`traffic/retention.go`），
+  按容量清理时每轮先 GC 无引用 blob，避免把共享正文误算成占用而过度删除。
+
+### 安全（流量落盘权限）
+- 流量正文 blob、内联正文所在的 `index.sqlite` 与 `traffic.log` 统一收紧为 `0600`。
+  这些文件包含 Cookie/Token 明文，此前按默认 `0644` 写入，同机其他用户可读。
+- 升级安装启动时会在后台遍历一次数据目录，把老版本留下的组/其他人可读文件一并
+  收紧（Windows 文件权限位无隔离意义，跳过）。
+
+### 变更（CI 测试门禁）
+- **独占测试库**：每个 CI job 创建 `pangu_ci_<run>_<attempt>` 库，不再复用服务容器
+  自带的 `pangu_test`；失败重跑也换新库，避免首轮固定名 fixture 把假失败带进重跑。
+- **新增 `race` job**：对 `db/guard/traffic/evidence/intercept/agent/server`
+  跑 `go test -race -p 1`，覆盖调度/收尾/删除屏障等并发最密集的包。
+- 修正 AGENTS.md 里一条会报错的本地建库命令（`DROP DATABASE`/`CREATE DATABASE`
+  不能放在同一个 `-c` 里）。
+
+### 变更（前端 lint 门禁）
+- **Biome 升级到 2.5.15**：2.5.1 的 `useNullishCoalescing` / `noFloatingPromises` /
+  `noMisusedPromises` / `noUnnecessaryConditions` 在 Windows 上直接栈溢出（
+  `biome::workspace_worker`），升级后恢复正常。
+- `files.includes` 排除 `.next-*` 历史产物，避免把生成代码算进 lint（全量诊断从
+  30 万+ 降回 165 个源文件）。
+- **CI 增加增量 lint 棘轮**：`biome lint --changed --since=<base>` 只检查本次改动
+  文件，新代码不得再引入 error；存量 133 个 error 留作独立治理任务。
+- 系统配置页修复 12 处 `<label>` 未关联输入框（补 `htmlFor`/`id`），并移除未使用导入。
+
+### 重构（路由注册按域拆分）
+- `server/server.go` 的 `Handler()` 中 340 条路由按域拆到
+  `routes_tasks.go` / `routes_assets.go` / `routes_ops.go` / `routes_platform.go`，
+  纯搬移、注册集合与顺序不变（拆分前后逐条 diff 校验一致）。
+
 ## [0.1.33] - 2026-11-27
 
 ### 修复（系统监测页两处误导，v0.1.32 实机反馈）
