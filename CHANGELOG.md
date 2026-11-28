@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 新增（自定义安装目录）
+- **`INSTALL_DIR` 环境变量与 `--dir` 均可指定安装目录**，优先级
+  `--dir` > `INSTALL_DIR` > `/opt/pangu`（macOS 无显式目录时仍默认 `$HOME/pangu`）。
+  例：`sudo INSTALL_DIR=/data/pangu ./install.sh`。
+- 安装前统一归一化/校验：必须是绝对路径，拒绝 `/`、空格/制表符、冒号、`..` 段，
+  以及 `/tmp`、`/run`、`/dev`、`/proc`、`/sys` 这类会被 systemd 隔离或重启即丢的位置；
+  父目录不可写时提前报错。状态文件 `install.env` 改在目录确定之后再定位。
+- 目录位于 `/home`、`/root`、`/run/user` 下时，systemd 单元自动把 `ProtectHome`
+  设为 `false`，避免服务看不到自己的安装目录；其余路径保持加固。
+- 修复 macOS 无 `--dir` 时 `install.env` 仍按 `/opt/pangu` 定位的旧问题。
+- `scripts/check_install_sh.sh` 增加三条守门：环境变量覆盖、`--dir` 优先、
+  归一化先于 `install.env` 加载。
+
 ## [0.1.34] - 2026-11-28
 
 ### 新增（流量保留策略与磁盘可见性）

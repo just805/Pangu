@@ -12,14 +12,22 @@
 #
 #   curl -fsSL .../install.sh | sudo bash    # 一条命令，交互式（模式/代理均可在 /dev/tty 里选）
 #
+# 自定义安装目录（三选一，优先级：--dir > 环境变量 INSTALL_DIR > 默认）：
+#   sudo INSTALL_DIR=/data/pangu ./install.sh
+#   sudo ./install.sh --dir=/data/pangu
+#
 # 幂等：重复执行 = 升级程序，保留数据（config.json / jwt.key / data / 数据库 / .env）。
 #
-# 卸载：二进制 systemctl disable --now pangu && rm -rf /opt/pangu
-#       Docker   cd /opt/pangu && docker compose down -v && rm -rf /opt/pangu
+# 卸载：二进制 systemctl disable --now pangu && rm -rf <安装目录>
+#       Docker   cd <安装目录> && docker compose down -v && rm -rf <安装目录>
 set -euo pipefail
 
 REPO="just805/Pangu"
-INSTALL_DIR="/opt/pangu"
+# 安装目录：环境变量 INSTALL_DIR 可覆盖默认值，--dir= 优先（见参数解析）。
+# 环境变量也算「显式指定」——否则 macOS 上会被下面的 $HOME/pangu 默认值覆盖。
+DIR_EXPLICIT=0
+if [ -n "${INSTALL_DIR:-}" ]; then DIR_EXPLICIT=1; fi
+INSTALL_DIR="${INSTALL_DIR:-/opt/pangu}"
 SERVICE="pangu"
 RUN_USER="pangu"
 VERSION="latest"
@@ -57,6 +65,50 @@ ok(){   printf '\033[32m[+]\033[0m %s\n' "$*"; }
 warn(){ printf '\033[33m[!]\033[0m %s\n' "$*"; }
 die(){  printf '\033[31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# normalize_install_dir 校验并归一化安装目录。必须在读取 <安装目录>/install.env
+# 之前调用（状态文件本身就在安装目录里）。
+#
+# 限制都是为了后面真正用它的地方：
+#   - systemd WorkingDirectory/ExecStart 与 docker compose 都把路径当独立参数，
+#     空格/制表符会在不加引号的位置被拆开；
+#   - compose 的卷语法用冒号分隔，路径里带 ":" 会被解析错；
+#   - 相对路径会随调用者 cwd 漂移（systemd 下 cwd 是 /），必须拒绝；
+#   - "/" 与已存在的普通文件直接拒绝。
+normalize_install_dir(){
+  case "$INSTALL_DIR" in
+    /*) : ;;
+    *) die "安装目录必须是绝对路径: $INSTALL_DIR（例：/data/pangu；也可设 INSTALL_DIR=/data/pangu）" ;;
+  esac
+  # 去掉末尾斜杠；"/" 会在下面被拒绝。
+  while [ "${INSTALL_DIR%/}" != "$INSTALL_DIR" ]; do
+    INSTALL_DIR="${INSTALL_DIR%/}"
+  done
+  [ -n "$INSTALL_DIR" ] && [ "$INSTALL_DIR" != "/" ] || die "不能把安装目录设为 /"
+  case "$INSTALL_DIR" in
+    *[[:space:]]*) die "安装目录不能包含空格或制表符: $INSTALL_DIR（systemd / docker compose 会拆路径）" ;;
+    *:*)           die "安装目录不能包含冒号: $INSTALL_DIR（docker compose 卷挂载会解析错）" ;;
+  esac
+  case "/$INSTALL_DIR/" in
+    */../*) die "安装目录不能包含 .. 路径段: $INSTALL_DIR" ;;
+  esac
+  # 这些位置要么是 tmpfs（重启即丢），要么会被 systemd 的 PrivateTmp/ProtectSystem
+  # 隔离，装进去表现为「服务起来了但 data 不在你以为的地方」。
+  case "$INSTALL_DIR" in
+    /dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/run|/run/*|/tmp|/tmp/*|/var/tmp|/var/tmp/*)
+      die "安装目录不能放在 $INSTALL_DIR：该路径是临时文件系统或会被 systemd 隔离，数据会丢或不可见" ;;
+  esac
+  if [ -e "$INSTALL_DIR" ] && [ ! -d "$INSTALL_DIR" ]; then
+    die "安装目录已存在且不是目录: $INSTALL_DIR"
+  fi
+  # 找最近一个已存在的父目录判断可写性：macOS 用户误用 /opt 时在这里就能报清楚，
+  # 而不是等 mkdir 到一半才失败。
+  local parent="$INSTALL_DIR"
+  while [ ! -d "$parent" ]; do
+    parent="$(dirname "$parent")"
+  done
+  [ -w "$parent" ] || die "没有权限创建 $INSTALL_DIR（父目录 $parent 不可写；换目录或加 sudo）"
+}
+
 # 任何「静默中断」都必须能看见行号与失败语句。set -e 的默认行为是什么都不打印：
 # v0.1.29（grep 找不到键）与 v0.1.30（tr 区间反序）两次事故都是「装到一半回到
 # 提示符」，用户完全不知道卡在哪。set -E 让 ERR trap 进入函数与命令替换；
@@ -90,7 +142,8 @@ PANGU 安装脚本
 
 通用:
   --version=VER          版本，默认 latest（如 v0.3.20）
-  --dir=PATH             安装目录（默认 /opt/pangu）
+  --dir=PATH             安装目录（默认 $INSTALL_DIR；也可用环境变量 INSTALL_DIR 指定，
+                         如 sudo INSTALL_DIR=/data/pangu ./install.sh）
   --listen=ADDR          监听地址（默认 :8787）
   --proxy=ADDR           流量记录代理地址（默认 127.0.0.1:8788）
   --domain=NAME          域名部署（如 pangu.example.com）：预置 HTTPS 相关环境变量并按域名打印访问入口；不填 = 按 IP:端口 访问（交互安装时也会询问，留空 = IP 直连）
@@ -120,6 +173,7 @@ Docker 形态专用:
 
 示例:
   sudo ./install.sh --mode=binary --with-tools
+  sudo INSTALL_DIR=/data/pangu ./install.sh --mode=binary
   sudo ./install.sh --mode=docker --version=v0.1.28
   sudo ./install.sh --mode=binary --install-proxy=http://10.0.0.14:7897 --with-tools
   sudo ./install.sh --doctor          # 装完之后的体检，可随时重跑
@@ -155,12 +209,49 @@ for arg in "$@"; do
   esac
 done
 
+# ── 前置检查 ─────────────────────────────────────
+IS_MAC=0
+case "$(uname -s)" in
+  Linux)  : ;;
+  Darwin) IS_MAC=1 ;;
+  *) die "仅支持 Linux / macOS" ;;
+esac
+
+ARCH="$(uname -m)"
+if [ "$IS_MAC" = "1" ]; then
+  # macOS：brew 与用户级 launchd 都是当前用户体系，全程不需要 sudo。
+  # 显式用 sudo 反而坏事：root 的 brew/HOME 与用户不一致，服务会落在 root 的
+  # LaunchAgents 里起不来。目录默认也放 $HOME/pangu（/opt 需要特权）。
+  [ "$(id -u)" = "0" ] && die "macOS 请直接运行本脚本（不要加 sudo）"
+  case "$ARCH" in
+    arm64)  PKG_ARCH="darwin-arm64" ;;
+    x86_64) PKG_ARCH="darwin-amd64" ;;
+    *) die "不支持的 Mac 架构: $ARCH（支持 arm64/x86_64）" ;;
+  esac
+  # /opt 在 macOS 需要特权；默认装到家目录，显式 --dir 优先
+  if [ "$DIR_EXPLICIT" != "1" ]; then
+    INSTALL_DIR="$HOME/pangu"
+  fi
+else
+  [ "$(id -u)" = "0" ] || die "请用 root/sudo 运行"
+  case "$ARCH" in
+    x86_64)  PKG_ARCH="linux-amd64" ;;
+    aarch64) PKG_ARCH="linux-arm64" ;;
+    *) die "不支持的架构: $ARCH（支持 x86_64/aarch64）" ;;
+  esac
+fi
+
+# 安装目录只在这里归一化一次：平台默认（macOS 无 --dir 时为 $HOME/pangu）已确定，
+# 之后所有 mkdir/chown/systemd/compose 都只认这个最终值。
+normalize_install_dir
+info "安装目录: $INSTALL_DIR"
+
 # ── 安装器状态沿用（升级不丢部署形态决策）──────────
 # DOMAIN/TRUSTED_PROXY 持久化到 <安装目录>/install.env：重跑升级时沿用上次的
 # 部署形态——否则交互重跑没填域名会把 systemd/compose 里的 COOKIE_SECURE/
 # TRUSTED_PROXIES 静默清掉（域名形态漂移回 IP 形态，HTTPS 登录直接坏）。
 # CLI 参数（--domain/--trusted-proxy）优先于状态文件；--domain=（空值）清除
-# 域名形态回 IP 直连。状态文件随安装目录走，--dir 换目录即换状态。
+# 域名形态回 IP 直连。状态文件随安装目录走，--dir / INSTALL_DIR 换目录即换状态。
 # 注意：PROXY_MODE/COOKIE_SECURE_VAL 必须在加载/合并前初始化——脚本 set -u，
 # 未定义变量直接报错（v0.1.9 首个交互冒烟即栽在这：初始化写在了合并之后）。
 PROXY_MODE=""
@@ -196,39 +287,6 @@ case "$PROXY_MODE" in
   caddy|existing) COOKIE_SECURE_VAL="1" ;;
   none)           COOKIE_SECURE_VAL="0" ;;
 esac
-
-# ── 前置检查 ─────────────────────────────────────
-DIR_EXPLICIT="${DIR_EXPLICIT:-0}"
-IS_MAC=0
-case "$(uname -s)" in
-  Linux)  : ;;
-  Darwin) IS_MAC=1 ;;
-  *) die "仅支持 Linux / macOS" ;;
-esac
-
-ARCH="$(uname -m)"
-if [ "$IS_MAC" = "1" ]; then
-  # macOS：brew 与用户级 launchd 都是当前用户体系，全程不需要 sudo。
-  # 显式用 sudo 反而坏事：root 的 brew/HOME 与用户不一致，服务会落在 root 的
-  # LaunchAgents 里起不来。目录默认也放 $HOME/pangu（/opt 需要特权）。
-  [ "$(id -u)" = "0" ] && die "macOS 请直接运行本脚本（不要加 sudo）"
-  case "$ARCH" in
-    arm64)  PKG_ARCH="darwin-arm64" ;;
-    x86_64) PKG_ARCH="darwin-amd64" ;;
-    *) die "不支持的 Mac 架构: $ARCH（支持 arm64/x86_64）" ;;
-  esac
-  # /opt 在 macOS 需要特权；默认装到家目录，显式 --dir 优先
-  if [ "$DIR_EXPLICIT" != "1" ]; then
-    INSTALL_DIR="$HOME/pangu"
-  fi
-else
-  [ "$(id -u)" = "0" ] || die "请用 root/sudo 运行"
-  case "$ARCH" in
-    x86_64)  PKG_ARCH="linux-amd64" ;;
-    aarch64) PKG_ARCH="linux-arm64" ;;
-    *) die "不支持的架构: $ARCH（支持 x86_64/aarch64）" ;;
-  esac
-fi
 
 # curl 是两种形态的公共依赖
 if ! command -v curl >/dev/null 2>&1; then
@@ -597,6 +655,13 @@ PYEOF
   # 不依赖外部命令，也不会因输入内容失败。
   project="$(basename "$INSTALL_DIR" | tr '[:upper:]' '[:lower:]')"
   project="${project//[!a-z0-9_-]/}"
+  # compose 项目名必须以字母/数字开头；自定义目录名（如 "---"、"_pangu"）归一后
+  # 可能为空或以符号开头，给一个稳定兜底，避免「是不是自己的容器」判断失真。
+  [ -n "$project" ] || project="pangu"
+  case "$project" in
+    [a-z0-9]*) : ;;
+    *) project="pangu-$project" ;;
+  esac
   foreign="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -v "^${project}-" || true)"
   if [ -n "$foreign" ]; then
     warn "已写 $f，但机器上还有其它容器在运行，未自动重启 docker——日志上限要在重启后生效（择机：systemctl restart docker）"
@@ -948,6 +1013,13 @@ swap_kb="$(awk '/SwapTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
 # IS_UPGRADE：安装目录里已经有部署产物 → 按升级处理（升级前自动备份数据库）。
 IS_UPGRADE=0
 if [ -f "$INSTALL_DIR/config.json" ] || [ -f "$INSTALL_DIR/docker-compose.yml" ]; then IS_UPGRADE=1; fi
+# 自定义目录首次部署时，如果默认目录已有部署，提示这是「另起一套」：旧 data 不会
+# 自动迁移，而 systemd 服务名与端口是固定的，会覆盖旧部署的入口。
+if [ "$IS_UPGRADE" = "0" ] && [ "$INSTALL_DIR" != "/opt/pangu" ] &&
+   { [ -f /opt/pangu/config.json ] || [ -f /opt/pangu/docker-compose.yml ]; }; then
+  warn "检测到 /opt/pangu 已有部署：本次是向 $INSTALL_DIR 新建一套，不会迁移旧 data"
+  warn "同一台机器继续前请先停用旧服务，避免 pangu.service / 端口被覆盖；迁移请手工拷贝 data 与数据库"
+fi
 if [ "${mem_kb:-0}" -gt 0 ] && [ "$mem_kb" -lt 3800000 ]; then
   warn "内存 < 4G：多 worker 并发 + 压缩器会吃紧（建议 4C8G 起）"
 fi
@@ -1518,7 +1590,13 @@ JSON
   #     SIGSYS 直接杀进程，而不是这里要的"干净拒绝"。
   #   - Environment=HOME 指到安装目录：ProtectHome + 家目录不可写会让 nuclei 的模板/缓存
   #     目录(~/nuclei-templates 等)写不进去。
-  # 注：--dir 若指向 /home 或 /root 底下，ProtectHome=true 会把它整个藏起来，需自行去掉该项。
+  # 安装目录在 /home、/root 或 /run/user 下时，ProtectHome=true 会把整条路径藏起来
+  # （自定义目录部署最常见的落点就是 /home/<user>/pangu），这里自动关掉该项；
+  # 其余路径保持 ProtectHome=true。
+  local protect_home="true"
+  case "$INSTALL_DIR" in
+    /home/*|/root/*|/run/user/*) protect_home="false" ;;
+  esac
   cat > "/etc/systemd/system/${SERVICE}.service" <<UNIT
 [Unit]
 Description=PANGU - AI Autonomous Penetration Testing System
@@ -1552,7 +1630,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ReadWritePaths=${INSTALL_DIR}
-ProtectHome=true
+ProtectHome=${protect_home}
 ProtectControlGroups=true
 ProtectKernelModules=true
 ProtectKernelTunables=true

@@ -93,6 +93,21 @@ check "角色已存在时同步密码（ALTER ROLE）" \
     grep -v "^[[:space:]]*#" "'"$TARGET"'" | grep -q "ALTER ROLE pangu LOGIN PASSWORD"
   '
 
+# 8) 自定义安装目录：环境变量 INSTALL_DIR 必须能覆盖默认值（--dir 已由参数解析覆盖）。
+check "INSTALL_DIR 环境变量可覆盖默认目录" \
+  grep -Fq 'INSTALL_DIR="${INSTALL_DIR:-/opt/pangu}"' "$TARGET"
+
+# 9) --dir 仍然优先于环境变量。
+check "--dir 仍可覆盖安装目录" \
+  bash -c '
+    grep -v "^[[:space:]]*#" "'"$TARGET"'" | grep -q -- "--dir=\*) .*INSTALL_DIR="
+  '
+
+# 10) 目录归一化必须发生在读取 install.env 之前：状态文件本身就在安装目录里，
+#     先读旧路径会在自定义目录/macOS 默认家目录下加载错文件。
+check "安装目录归一化先于 install.env 加载" \
+  awk '/^normalize_install_dir$/{a=NR} /^INSTALL_STATE=/{b=NR} END{exit !(a && b && a<b)}' "$TARGET"
+
 if [ "$fail" -gt 0 ]; then
   printf '\n=== %d 项检查未通过 ===\n' "$fail"
   exit 1
