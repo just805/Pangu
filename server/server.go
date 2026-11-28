@@ -214,7 +214,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	if m.pg != nil {
 		// 周期任务调度（M-06）：只新建任务，永不触发复测。
 		s.startScheduleLoop()
-		agent.PromptOverride = func(key string) (string, bool) {
+		agent.SetPromptOverride(func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil {
 				return "", false
@@ -224,7 +224,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 				return "", false
 			}
 			return t, true
-		}
+		})
 		// Wire DB-stored wrap-up (settlement) prompts. Empty column → built-in default.
 		agent.WrapupOverride = func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)

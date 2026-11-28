@@ -72,9 +72,11 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 		t.Fatalf("bad task payload: %v", out)
 	}
 
-	// the exploration owns goal node(s) — goal seeding is async, poll briefly
+	// the exploration owns goal node(s) — goal seeding is async, poll briefly.
+	// 10s budget: under `-race` + full-package load the async seeding can take
+	// several seconds; 3s produced a timing-only failure in CI's race job.
 	var goals []*db.Node
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 100; i++ {
 		goals, err = m.pg.Exploration(expID).ListByKind("goal", 10)
 		if err != nil || len(goals) > 0 {
 			break

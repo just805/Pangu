@@ -6,12 +6,6 @@ import (
 	"time"
 )
 
-// PromptOverride, if set, returns the stored system-prompt template for an agent
-// key and whether one exists. The server wires it to the PG agent_prompts table.
-// When nil or no override exists, agents use their built-in default prompt — so
-// behavior is identical until a user edits a prompt in the UI.
-var PromptOverride func(agentKey string) (string, bool)
-
 // Prompt-variable structs — fields mirror each agent's catalog (docs §5a) so a
 // user template referencing a catalog variable renders; referencing anything else
 // fails template execution and falls back to the built-in default.
@@ -44,10 +38,8 @@ var SkillIndexBlock func(agentKey string) string
 
 func renderSystem(agentKey, def string, vars any) string {
 	tmpl := def
-	if PromptOverride != nil {
-		if t, ok := PromptOverride(agentKey); ok && t != "" {
-			tmpl = t
-		}
+	if t, ok := PromptOverride(agentKey); ok && t != "" {
+		tmpl = t
 	}
 	body := def
 	if out, err := renderTmpl(tmpl, vars); err == nil {

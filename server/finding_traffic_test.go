@@ -21,6 +21,17 @@ import (
 )
 
 func trafficEvidenceServer(t *testing.T) (*Server, *db.RecordedFinding, func(string, string, string) *httptest.ResponseRecorder) {
+	return trafficEvidenceServerWithContext(t, false)
+}
+
+// trafficEvidenceServerLive 保留一个可用的服务 ctx，供需要跑后台归档 worker 的
+// 用例使用。不要在 New 之后直接改 s.ctx：后台协程已经读过它（race detector 会
+// 报 data race），改为构造时就传入正确的 ctx。
+func trafficEvidenceServerLive(t *testing.T) (*Server, *db.RecordedFinding, func(string, string, string) *httptest.ResponseRecorder) {
+	return trafficEvidenceServerWithContext(t, true)
+}
+
+func trafficEvidenceServerWithContext(t *testing.T, live bool) (*Server, *db.RecordedFinding, func(string, string, string) *httptest.ResponseRecorder) {
 	t.Helper()
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
@@ -38,12 +49,17 @@ func trafficEvidenceServer(t *testing.T) (*Server, *db.RecordedFinding, func(str
 	tid, _ := strconv.ParseInt(task.ID, 10, 64)
 	t.Cleanup(func() { m.pg.Exec(`DELETE FROM task_archives WHERE task_id=$1`, tid); m.pg.DeleteTask(tid) })
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	t.Cleanup(cancel)
+	if !live {
+		cancel()
+	}
 	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
-	s.archiveWG.Wait()
-	// The archive test below replaces the cancelled service context. Wait for
-	// the side-question snapshot writer too before reusing this fixture.
-	<-s.side.done
+	if !live {
+		s.archiveWG.Wait()
+		// The archive test below uses a separate live fixture. Wait for the
+		// side-question snapshot writer too before reusing this fixture.
+		<-s.side.done
+	}
 	token, err := signJWT(s.currentJWTKey())
 	if err != nil {
 		t.Fatal(err)
@@ -247,9 +263,8 @@ func TestFindingTrafficAPIAndExport(t *testing.T) {
 }
 
 func TestFindingTrafficArchiveV3RoundTripAndRetry(t *testing.T) {
-	s, f, _ := trafficEvidenceServer(t)
+	s, f, _ := trafficEvidenceServerLive(t)
 	ctx := context.Background()
-	s.ctx = ctx
 	body := []byte("evidence without original traffic\x00\xff")
 	seedServerEvidenceFlow(t, s, "original", body)
 	list, err := s.evidenceStore().Bind(ctx, f.FindingID, []db.TrafficRef{{TrafficID: "original", Role: "proof", Note: "keep note"}})

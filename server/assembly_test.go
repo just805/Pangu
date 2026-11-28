@@ -49,7 +49,7 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	}
 
 	wireAgentAugment(pg, skillDir, nil)
-	t.Cleanup(func() { agent.ToolAugment = nil })
+	t.Cleanup(func() { agent.SetToolAugment(nil) })
 
 	ag, _ := pg.GetAgentByKey("planner")
 	if ag == nil {
