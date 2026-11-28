@@ -117,8 +117,12 @@ jobs:
           grep -q "装后体检" /tmp/install.log
           # 调优要落盘（重启后仍在），不是只在运行期 sysctl -w 一下
           test -f /etc/sysctl.d/99-pangu.conf || { echo "缺 sysctl.d/99-pangu.conf"; exit 1; }
-          grep -q "^fs.file-max = 2097152" /etc/sysctl.d/99-pangu.conf || { cat /etc/sysctl.d/99-pangu.conf; exit 1; }
-          [ "$(sysctl -n fs.file-max)" -ge 2097152 ]
+          # 「只升不降」：runner 默认 fs.file-max 可能已 >= 目标值，脚本就不会写这行。
+          # 断言应看「现值或持久化配置满足」，而不是强制配置文件里必须有该行。
+          [ "$(sysctl -n fs.file-max)" -ge 2097152 ] || { echo "fs.file-max 未达标"; cat /etc/sysctl.d/99-pangu.conf; exit 1; }
+          if grep -q '^fs.file-max' /etc/sysctl.d/99-pangu.conf; then
+            grep -q "^fs.file-max = 2097152" /etc/sysctl.d/99-pangu.conf
+          fi
           test -f /etc/systemd/journald.conf.d/99-pangu.conf
           # 无 swap 的机器上应自动建出来（runner 本身没有 swap）
           awk '/SwapTotal/{print $2}' /proc/meminfo | grep -qv '^0$' || { echo "swap 未创建"; exit 1; }
@@ -160,7 +164,9 @@ jobs:
             || { echo "升级前备份不是有效转储"; exit 1; }
           [ "$(sudo sh -c 'stat -c %a /opt/pangu/backups/db-pre-upgrade-*.sql.gz' | sort -u)" = "600" ]
           # 调优幂等：重跑不许把 sysctl 配置写出重复行
-          [ "$(grep -c '^fs.file-max' /etc/sysctl.d/99-pangu.conf)" = "1" ] || { cat /etc/sysctl.d/99-pangu.conf; exit 1; }
+          # 调优幂等：若写入了 fs.file-max，重跑不许写成重复行；默认值已达标时不写也正常。
+          n=$(grep -c '^fs.file-max' /etc/sysctl.d/99-pangu.conf || true)
+          [ "$n" -le 1 ] || { cat /etc/sysctl.d/99-pangu.conf; exit 1; }
           grep -q "无需调整\|已调优" /tmp/reinstall.log
           # 定时器装的备份脚本本身要能跑、产出有效转储
           sudo /opt/pangu/backup.sh

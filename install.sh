@@ -1938,6 +1938,10 @@ deploy_docker(){
   docker info >/dev/null 2>&1 || die "Docker 守护进程未运行（systemctl start docker）"
   command -v unzip >/dev/null 2>&1 || { apt-get install -y unzip >/dev/null 2>&1 || dnf install -y unzip >/dev/null 2>&1 || die "需要 unzip"; }
 
+  # 端口变量必须在首次生成 .env 之前定义：下面 heredoc 会写入 $PORT / $PROXY_PORT，
+  # set -u 下在 local 声明前引用会直接以 "unbound variable" 中断 Docker 首装。
+  local PORT="${LISTEN_ADDR##*:}" PROXY_PORT="${PROXY_ADDR##*:}"
+
   # 磁盘前置：镜像解压后 3.66GB，Docker 数据目录与系统盘同盘时，拉取中途把盘写满
   # 不只是安装失败——宿主机自己也会跟着出问题。低于 4G 直接拒绝。
   local docker_root avail
@@ -2052,7 +2056,6 @@ ENV
     ok "已按域名部署预置 PANGU_COOKIE_SECURE=$COOKIE_SECURE_VAL / PANGU_TRUSTED_PROXIES=$TRUSTED_PROXY（反代方案: $PROXY_MODE）"
   fi
 
-  local PORT="${LISTEN_ADDR##*:}" PROXY_PORT="${PROXY_ADDR##*:}"
   # 域名形态且反代方案为 caddy/existing：宿主端口绑 127.0.0.1（UI 只经反代
   # 访问，8787 不裸奔公网）；none = UI 直接对外（反代就绪前的过渡形态）。
   local UI_BIND=""
