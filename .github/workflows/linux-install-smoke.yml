@@ -58,6 +58,8 @@ jobs:
           # ③ 中断必须可定位
           grep -q '^set -E$' install.sh || { echo "缺 set -E"; exit 1; }
           grep -q "^trap 'on_err" install.sh || { echo "缺 ERR trap"; exit 1; }
+          # ④ install.sh 静态守门（含自定义目录的三条检查）。
+          bash scripts/check_install_sh.sh install.sh
           echo "lint OK"
 
       - name: Resolve smoke version
@@ -171,6 +173,75 @@ jobs:
           grep -q "自动备份已启用" /tmp/doctor.log
           grep -q "内核网络 / 句柄参数在建议值以上" /tmp/doctor.log
           echo "doctor OK"
+
+  # ── 自定义安装目录冒烟 ──────────────────────────────────────────
+  # --dir / INSTALL_DIR 自定义目录此前零 CI 覆盖。用环境变量装到 /srv/pangu-smoke，
+  # 验证：实际落点、systemd WorkingDirectory/HOME/ReadWritePaths、ProtectHome 保持
+  # true、服务健康、重跑幂等、--doctor 按自定义目录体检，以及默认 /opt/pangu 未被创建。
+  smoke-custom-dir:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve smoke version
+        run: |
+          TAG=""
+          for i in 1 2 3; do
+            TAG="$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
+            [ -n "$TAG" ] && break
+            echo "attempt $i: 解析失败（限流？），30s 后重试"
+            sleep 30
+          done
+          [ -n "$TAG" ] || TAG="v0.1.34"
+          echo "PANGU_SMOKE_VERSION=$TAG" >> "$GITHUB_ENV"
+          echo "smoke version: $TAG"
+
+      - name: Run install.sh (custom INSTALL_DIR)
+        run: |
+          set -o pipefail
+          sudo -E INSTALL_DIR=/srv/pangu-smoke bash install.sh --mode=binary -y --version="$PANGU_SMOKE_VERSION" 2>&1 | tee /tmp/install-custom.log
+          grep -q "安装目录: /srv/pangu-smoke" /tmp/install-custom.log \
+            || { echo "── 未按 INSTALL_DIR 安装 ──"; tail -60 /tmp/install-custom.log; exit 1; }
+          grep -q "服务已就绪" /tmp/install-custom.log \
+            || { echo "── 服务未就绪 ──"; tail -60 /tmp/install-custom.log; journalctl -u pangu -n 50; exit 1; }
+
+      - name: Verify custom-dir layout + systemd hardening
+        run: |
+          D=/srv/pangu-smoke
+          test -x "$D/pangu" || { echo "缺 $D/pangu"; ls -la "$D"; exit 1; }
+          test -f "$D/config.json" || { echo "缺 config.json"; exit 1; }
+          test -d "$D/data" || { echo "缺 data/"; exit 1; }
+          test -f "$D/start.sh" || { echo "缺 start.sh"; exit 1; }
+          test ! -e /opt/pangu || { echo "默认目录 /opt/pangu 被创建了"; ls -la /opt/pangu; exit 1; }
+          unit=/etc/systemd/system/pangu.service
+          grep -q "^WorkingDirectory=$D$" "$unit" || { echo "单元 WorkingDirectory 不对"; grep '^WorkingDirectory' "$unit"; exit 1; }
+          grep -q "^Environment=HOME=$D$" "$unit" || { echo "单元 HOME 不对"; grep '^Environment=HOME' "$unit"; exit 1; }
+          grep -q "^ReadWritePaths=$D$" "$unit" || { echo "单元 ReadWritePaths 不对"; grep '^ReadWritePaths' "$unit"; exit 1; }
+          grep -q "^ProtectHome=true$" "$unit" || { echo "/srv 下 ProtectHome 应保持 true"; grep '^ProtectHome' "$unit"; exit 1; }
+          systemctl is-active --quiet pangu || { echo "pangu 未运行"; systemctl status pangu --no-pager; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/health)
+          [ "$code" = "200" ] || { echo "health=$code"; journalctl -u pangu -n 50; exit 1; }
+          sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='pangu'" | grep -q 1
+          echo "custom-dir layout / systemd OK"
+
+      - name: Verify idempotent re-run + doctor on custom dir
+        run: |
+          D=/srv/pangu-smoke
+          before=$(sudo md5sum "$D/config.json" | cut -d' ' -f1)
+          sudo -E INSTALL_DIR=$D bash install.sh --mode=binary -y --version="$PANGU_SMOKE_VERSION" > /tmp/reinstall-custom.log 2>&1
+          grep -q "沿用既有 config.json" /tmp/reinstall-custom.log \
+            || { echo "重跑未复用 config.json"; tail -60 /tmp/reinstall-custom.log; exit 1; }
+          after=$(sudo md5sum "$D/config.json" | cut -d' ' -f1)
+          [ "$before" = "$after" ] || { echo "config.json 被覆盖"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/health)
+          [ "$code" = "200" ] || { echo "重跑后 health=$code"; exit 1; }
+          sudo -E INSTALL_DIR=$D bash install.sh --doctor > /tmp/doctor-custom.log 2>&1 \
+            || { echo "doctor 退出码非 0"; cat /tmp/doctor-custom.log; exit 1; }
+          grep -q "安装目录: $D" /tmp/doctor-custom.log \
+            || { echo "doctor 未按自定义目录体检"; head -20 /tmp/doctor-custom.log; exit 1; }
+          grep -q "服务健康" /tmp/doctor-custom.log || { cat /tmp/doctor-custom.log; exit 1; }
+          echo "custom-dir idempotent re-run + doctor OK"
 
   # ── Docker 形态冒烟 ──────────────────────────────────────────────
   # Docker 是绝大多数正式部署用的形态，此前零 CI 覆盖（v0.1.28 的 MCP 路由冲突那种
