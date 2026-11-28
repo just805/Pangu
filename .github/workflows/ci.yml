@@ -152,7 +152,7 @@ jobs:
               SINCE="HEAD~1"
             fi
           fi
-          npx biome lint --changed --since="$SINCE"
+          npx biome lint --changed --since="$SINCE" --no-errors-on-unmatched
       - name: Build (static export)
         run: npm run build:static
         working-directory: web
